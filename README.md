@@ -16,6 +16,17 @@ by average-target upside, and writes `output/qqq_YYYY-MM-DD.csv` and
 `output/sp500_YYYY-MM-DD.csv`. Re-running on the same day overwrites that
 day's rows. The "yesterday" columns populate from the second daily run onward.
 
+Each run also regenerates **`output/report.html`** (from
+`report_template.html`) — a self-contained interactive page: KPI tiles, a
+top-20 upside chart with min–max analyst ranges, a day-over-day movers chart
+(appears once two dates of history exist), and a sortable table of every
+holding, with a QQQ / S&P 500 toggle and light/dark theme. Open it in any
+browser:
+
+```bash
+open output/report.html
+```
+
 Takes ~10 seconds (~520 unique tickers; overlapping tickers are fetched once).
 
 ## Scheduling
