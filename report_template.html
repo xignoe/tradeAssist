@@ -180,6 +180,7 @@ const fmt = {
   pct:   (v) => v == null ? "N/A" : (v > 0 ? "+" : "") + v.toFixed(1) + "%",
   pp:    (v) => v == null ? "N/A" : (v > 0 ? "+" : "") + v.toFixed(2),
   ratio: (v) => v == null ? "N/A" : v.toFixed(1),
+  money: (v) => v == null ? "N/A" : "$" + v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2}),
 };
 
 /* ---------- theme ---------- */
@@ -217,7 +218,7 @@ function hideTip() { tt.style.display = "none"; }
 
 function tipHTML(r) {
   return `<div class="tt-title">${r.t} — ${r.n}</div>
-    Price <span class="num">$${fmt.price(r.price)}</span> · Avg target <span class="num">$${fmt.price(r.avg_t)}</span><br>
+    Price <span class="num">${fmt.money(r.price)}</span> · Prev <span class="num">${fmt.money(r.y_price)}</span> · Avg target <span class="num">${fmt.money(r.avg_t)}</span><br>
     P/E <span class="num">${fmt.ratio(r.pe)}</span> · Forward P/E <span class="num">${fmt.ratio(r.fpe)}</span><br>
     Avg <span class="num">${fmt.pct(r.avg)}</span> · Range <span class="num">${fmt.pct(r.mn)}</span> to <span class="num">${fmt.pct(r.mx)}</span><br>
     Prev avg <span class="num">${fmt.pct(r.y)}</span> · Change <span class="num">${fmt.pp(r.chg)}</span> pp`;
@@ -368,14 +369,15 @@ function renderTiles(rows) {
       <div class="sub">${top ? fmt.pct(top.avg) + " · " + top.n : ""}</div></div>
     <div class="tile"><div class="lbl">Biggest riser vs prev run</div>
       <div class="val">${riser ? riser.t : "—"}</div>
-      <div class="sub">${riser ? fmt.pp(riser.chg) + " pp" : "needs two dates of history"}</div></div>`;
+      <div class="sub">${riser ? fmt.pp(riser.chg) + " pp" : "no prior-run values for these holdings yet"}</div></div>`;
 }
 
 /* ---------- table ---------- */
 const COLS = [
   { k: "t",     h: "Ticker",    l: 1 },
   { k: "n",     h: "Name",      l: 1 },
-  { k: "price", h: "Price" },
+  { k: "price",   h: "Price" },
+  { k: "y_price", h: "Yday Price" },
   { k: "pe",    h: "P/E" },
   { k: "fpe",   h: "Fwd P/E" },
   { k: "avg_t", h: "Avg Tgt" },
@@ -402,7 +404,8 @@ function renderTable(rows) {
   for (const r of data) {
     const cell = (v, f, cls) => v == null ? `<td class="na ${cls || ""}">N/A</td>` : `<td class="${cls || ""}">${f(v)}</td>`;
     s += `<tr><td class="l"><b>${r.t}</b></td><td class="l name" title="${r.n}">${r.n}</td>`
-      + cell(r.price, fmt.price) + cell(r.pe, fmt.ratio) + cell(r.fpe, fmt.ratio)
+      + cell(r.price, fmt.price) + cell(r.y_price, fmt.price)
+      + cell(r.pe, fmt.ratio) + cell(r.fpe, fmt.ratio)
       + cell(r.avg_t, fmt.price)
       + cell(r.avg, fmt.pct) + cell(r.mx, fmt.pct) + cell(r.mn, fmt.pct) + cell(r.y, fmt.pct)
       + (r.chg == null ? '<td class="na">N/A</td>'

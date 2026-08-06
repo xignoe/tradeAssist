@@ -475,9 +475,10 @@ def build_rows(holdings, results, previous):
         avg_pct = pct(d["avg"], cur) if d else None
         max_pct = pct(d["high"], cur) if d else None
         min_pct = pct(d["low"], cur) if d else None
-        y_avg_pct = None
+        y_price = y_avg_pct = None
         if t in previous:
             y_cur, y_avg = previous[t]
+            y_price = y_cur
             y_avg_pct = pct(y_avg, y_cur)
         change_pp = (avg_pct - y_avg_pct
                      if avg_pct is not None and y_avg_pct is not None else None)
@@ -486,14 +487,15 @@ def build_rows(holdings, results, previous):
                      "pe_fwd": d.get("pe_fwd") if d else None,
                      "avg_target": d["avg"] if d else None, "avg_pct": avg_pct,
                      "max_pct": max_pct, "min_pct": min_pct,
-                     "y_avg_pct": y_avg_pct, "change_pp": change_pp})
+                     "y_price": y_price, "y_avg_pct": y_avg_pct,
+                     "change_pp": change_pp})
     rows.sort(key=lambda r: (r["avg_pct"] is None,
                              -(r["avg_pct"] if r["avg_pct"] is not None else 0)))
     return rows
 
 
-HEADERS = ["Ticker", "Name", "Price", "P/E", "Fwd P/E", "Avg Tgt", "Avg Tgt %",
-           "Max Tgt %", "Min Tgt %", "Yday Avg %", "Chg (pp)"]
+HEADERS = ["Ticker", "Name", "Price", "Yday Price", "P/E", "Fwd P/E", "Avg Tgt",
+           "Avg Tgt %", "Max Tgt %", "Min Tgt %", "Yday Avg %", "Chg (pp)"]
 LEFT_ALIGNED = {0, 1}  # Ticker and Name columns
 
 
@@ -506,6 +508,7 @@ def _clip(name):
 def print_table(rows):
     table = [[r["ticker"], _clip(r["name"]),
               "%.2f" % r["current"] if r["current"] is not None else "N/A",
+              "%.2f" % r["y_price"] if r["y_price"] is not None else "N/A",
               "%.1f" % r["pe_ttm"] if r["pe_ttm"] is not None else "N/A",
               "%.1f" % r["pe_fwd"] if r["pe_fwd"] is not None else "N/A",
               "%.2f" % r["avg_target"] if r["avg_target"] is not None else "N/A",
@@ -529,12 +532,14 @@ def write_csv(rows, universe, today):
     path = OUTPUT_DIR / ("%s_%s.csv" % (universe, today.isoformat()))
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["ticker", "company_name", "current_price", "pe_ttm",
-                    "pe_forward", "avg_target", "avg_target_pct", "max_target_pct",
-                    "min_target_pct", "yesterday_avg_target_pct", "change_pp"])
+        w.writerow(["ticker", "company_name", "current_price", "yesterday_price",
+                    "pe_ttm", "pe_forward", "avg_target", "avg_target_pct",
+                    "max_target_pct", "min_target_pct", "yesterday_avg_target_pct",
+                    "change_pp"])
         for r in rows:
             w.writerow([r["ticker"], r["name"],
                         round(r["current"], 4) if r["current"] is not None else "",
+                        round(r["y_price"], 4) if r["y_price"] is not None else "",
                         round(r["pe_ttm"], 2) if r["pe_ttm"] is not None else "",
                         round(r["pe_fwd"], 2) if r["pe_fwd"] is not None else "",
                         round(r["avg_target"], 4) if r["avg_target"] is not None else "",
@@ -558,7 +563,8 @@ def write_report(report_universes, today):
         "universes": {
             key: {"label": label,
                   "rows": [{"t": r["ticker"], "n": r["name"],
-                            "price": r["current"], "avg_t": r["avg_target"],
+                            "price": r["current"], "y_price": r["y_price"],
+                            "avg_t": r["avg_target"],
                             "pe": _round(r["pe_ttm"], 1),
                             "fpe": _round(r["pe_fwd"], 1),
                             "avg": _round(r["avg_pct"]), "mx": _round(r["max_pct"]),
