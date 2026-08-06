@@ -55,8 +55,12 @@ SCHWAB_MODULE_URL = ("https://www.schwab.wallst.com/schwab/Prospect/research/res
 STOCKANALYSIS_URL = "https://stockanalysis.com/list/sp-500-stocks/__data.json"
 TV_SCANNER_URL = "https://scanner.tradingview.com/symbol"
 TV_SCAN_BATCH_URL = "https://scanner.tradingview.com/america/scan"
-TV_FIELDS = "close,price_target_average,price_target_high,price_target_low"
-TV_COLUMNS = ["close", "price_target_average", "price_target_high", "price_target_low"]
+TV_FIELDS = ("close,price_target_average,price_target_high,price_target_low,"
+             "price_earnings_ttm,earnings_per_share_forecast_next_fy")
+TV_COLUMNS = ["close", "price_target_average", "price_target_high", "price_target_low",
+              # Trailing P/E comes straight from the API; there is no forward-P/E
+              # field, so it is derived from next-fiscal-year EPS consensus.
+              "price_earnings_ttm", "earnings_per_share_forecast_next_fy"]
 TV_EXCHANGES = ("NASDAQ", "NYSE", "AMEX", "CBOE")
 BATCH_SIZE = 150
 
@@ -221,6 +225,18 @@ def get_holdings(universe, fetcher, today):
 # Price targets — batch scan (primary path)
 # ----------------------------------------------------------------------------
 
+def _pos(v):
+    """A P/E is only meaningful on positive earnings; negatives read as N/A."""
+    return float(v) if v is not None and v > 0 else None
+
+
+def _fwd_pe(close, fwd_eps):
+    """Forward P/E = price / next-fiscal-year consensus EPS."""
+    if close is None or fwd_eps is None or fwd_eps <= 0:
+        return None
+    return float(close) / float(fwd_eps)
+
+
 def _batch_scan(client, prefixed):
     """One /america/scan POST for up to BATCH_SIZE 'EXCHANGE:TICKER' symbols.
     Returns {'EXCHANGE:TICKER': [close, avg, high, low]}; unknown symbols are
@@ -267,13 +283,15 @@ def fetch_all_targets_batch(tickers):
                 if key not in found:
                     still.append(t)
                     continue
-                close, avg, high, low = found[key]
+                close, avg, high, low, pe_ttm, fwd_eps = found[key]
                 if close is None or avg is None:
                     log.warning("%s: no price target data", t)
                     continue  # resolved on this exchange, just no coverage
                 out[t] = {"current": float(close), "avg": float(avg),
                           "high": float(high) if high is not None else None,
-                          "low": float(low) if low is not None else None}
+                          "low": float(low) if low is not None else None,
+                          "pe_ttm": _pos(pe_ttm),
+                          "pe_fwd": _fwd_pe(close, fwd_eps)}
             remaining = still
     for t in remaining:
         log.warning("%s: not found on %s", t, "/".join(TV_EXCHANGES))
@@ -329,6 +347,9 @@ async def fetch_targets(client, sem, ticker):
                              if data.get("price_target_high") is not None else None),
                     "low": (float(data["price_target_low"])
                             if data.get("price_target_low") is not None else None),
+                    "pe_ttm": _pos(data.get("price_earnings_ttm")),
+                    "pe_fwd": _fwd_pe(current,
+                                      data.get("earnings_per_share_forecast_next_fy")),
                 }
             except Exception as exc:
                 if attempt == MAX_TRIES:
@@ -390,6 +411,12 @@ def open_db():
             min_target    REAL,
             PRIMARY KEY (date, ticker)
         )""")
+    # Additive migration for databases created before the P/E columns existed.
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(targets)")}
+    for col in ("pe_ttm", "pe_fwd"):
+        if col not in existing:
+            conn.execute("ALTER TABLE targets ADD COLUMN %s REAL" % col)
+    conn.commit()
     return conn
 
 
@@ -399,11 +426,15 @@ def save_today(conn, today, results):
     otherwise destroy good rows written earlier the same day, and analyst
     targets can't be re-fetched for a past date. The (date, ticker) primary key
     keeps re-runs idempotent per ticker."""
-    rows = [(today.isoformat(), t, d["current"], d["avg"], d["high"], d["low"])
+    rows = [(today.isoformat(), t, d["current"], d["avg"], d["high"], d["low"],
+             d.get("pe_ttm"), d.get("pe_fwd"))
             for t, d in results.items() if d is not None]
     with conn:
         conn.executemany(
-            "INSERT OR REPLACE INTO targets VALUES (?, ?, ?, ?, ?, ?)", rows)
+            """INSERT OR REPLACE INTO targets
+               (date, ticker, current_price, avg_target, max_target, min_target,
+                pe_ttm, pe_fwd)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", rows)
     return len(rows)
 
 
@@ -451,6 +482,8 @@ def build_rows(holdings, results, previous):
         change_pp = (avg_pct - y_avg_pct
                      if avg_pct is not None and y_avg_pct is not None else None)
         rows.append({"ticker": t, "name": name, "current": cur,
+                     "pe_ttm": d.get("pe_ttm") if d else None,
+                     "pe_fwd": d.get("pe_fwd") if d else None,
                      "avg_target": d["avg"] if d else None, "avg_pct": avg_pct,
                      "max_pct": max_pct, "min_pct": min_pct,
                      "y_avg_pct": y_avg_pct, "change_pp": change_pp})
@@ -459,8 +492,8 @@ def build_rows(holdings, results, previous):
     return rows
 
 
-HEADERS = ["Ticker", "Name", "Price", "Avg Tgt", "Avg Tgt %", "Max Tgt %",
-           "Min Tgt %", "Yday Avg %", "Chg (pp)"]
+HEADERS = ["Ticker", "Name", "Price", "P/E", "Fwd P/E", "Avg Tgt", "Avg Tgt %",
+           "Max Tgt %", "Min Tgt %", "Yday Avg %", "Chg (pp)"]
 LEFT_ALIGNED = {0, 1}  # Ticker and Name columns
 
 
@@ -473,6 +506,8 @@ def _clip(name):
 def print_table(rows):
     table = [[r["ticker"], _clip(r["name"]),
               "%.2f" % r["current"] if r["current"] is not None else "N/A",
+              "%.1f" % r["pe_ttm"] if r["pe_ttm"] is not None else "N/A",
+              "%.1f" % r["pe_fwd"] if r["pe_fwd"] is not None else "N/A",
               "%.2f" % r["avg_target"] if r["avg_target"] is not None else "N/A",
               fmt_pct(r["avg_pct"]), fmt_pct(r["max_pct"]), fmt_pct(r["min_pct"]),
               fmt_pct(r["y_avg_pct"]),
@@ -494,12 +529,14 @@ def write_csv(rows, universe, today):
     path = OUTPUT_DIR / ("%s_%s.csv" % (universe, today.isoformat()))
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["ticker", "company_name", "current_price", "avg_target",
-                    "avg_target_pct", "max_target_pct", "min_target_pct",
-                    "yesterday_avg_target_pct", "change_pp"])
+        w.writerow(["ticker", "company_name", "current_price", "pe_ttm",
+                    "pe_forward", "avg_target", "avg_target_pct", "max_target_pct",
+                    "min_target_pct", "yesterday_avg_target_pct", "change_pp"])
         for r in rows:
             w.writerow([r["ticker"], r["name"],
                         round(r["current"], 4) if r["current"] is not None else "",
+                        round(r["pe_ttm"], 2) if r["pe_ttm"] is not None else "",
+                        round(r["pe_fwd"], 2) if r["pe_fwd"] is not None else "",
                         round(r["avg_target"], 4) if r["avg_target"] is not None else "",
                         round(r["avg_pct"], 2) if r["avg_pct"] is not None else "",
                         round(r["max_pct"], 2) if r["max_pct"] is not None else "",
@@ -522,6 +559,8 @@ def write_report(report_universes, today):
             key: {"label": label,
                   "rows": [{"t": r["ticker"], "n": r["name"],
                             "price": r["current"], "avg_t": r["avg_target"],
+                            "pe": _round(r["pe_ttm"], 1),
+                            "fpe": _round(r["pe_fwd"], 1),
                             "avg": _round(r["avg_pct"]), "mx": _round(r["max_pct"]),
                             "mn": _round(r["min_pct"]), "y": _round(r["y_avg_pct"]),
                             "chg": _round(r["change_pp"])} for r in rows]}

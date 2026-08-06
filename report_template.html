@@ -179,6 +179,7 @@ const fmt = {
   price: (v) => v == null ? "N/A" : v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2}),
   pct:   (v) => v == null ? "N/A" : (v > 0 ? "+" : "") + v.toFixed(1) + "%",
   pp:    (v) => v == null ? "N/A" : (v > 0 ? "+" : "") + v.toFixed(2),
+  ratio: (v) => v == null ? "N/A" : v.toFixed(1),
 };
 
 /* ---------- theme ---------- */
@@ -217,6 +218,7 @@ function hideTip() { tt.style.display = "none"; }
 function tipHTML(r) {
   return `<div class="tt-title">${r.t} — ${r.n}</div>
     Price <span class="num">$${fmt.price(r.price)}</span> · Avg target <span class="num">$${fmt.price(r.avg_t)}</span><br>
+    P/E <span class="num">${fmt.ratio(r.pe)}</span> · Forward P/E <span class="num">${fmt.ratio(r.fpe)}</span><br>
     Avg <span class="num">${fmt.pct(r.avg)}</span> · Range <span class="num">${fmt.pct(r.mn)}</span> to <span class="num">${fmt.pct(r.mx)}</span><br>
     Prev avg <span class="num">${fmt.pct(r.y)}</span> · Change <span class="num">${fmt.pp(r.chg)}</span> pp`;
 }
@@ -374,6 +376,8 @@ const COLS = [
   { k: "t",     h: "Ticker",    l: 1 },
   { k: "n",     h: "Name",      l: 1 },
   { k: "price", h: "Price" },
+  { k: "pe",    h: "P/E" },
+  { k: "fpe",   h: "Fwd P/E" },
   { k: "avg_t", h: "Avg Tgt" },
   { k: "avg",   h: "Avg %" },
   { k: "mx",    h: "Max %" },
@@ -398,7 +402,8 @@ function renderTable(rows) {
   for (const r of data) {
     const cell = (v, f, cls) => v == null ? `<td class="na ${cls || ""}">N/A</td>` : `<td class="${cls || ""}">${f(v)}</td>`;
     s += `<tr><td class="l"><b>${r.t}</b></td><td class="l name" title="${r.n}">${r.n}</td>`
-      + cell(r.price, fmt.price) + cell(r.avg_t, fmt.price)
+      + cell(r.price, fmt.price) + cell(r.pe, fmt.ratio) + cell(r.fpe, fmt.ratio)
+      + cell(r.avg_t, fmt.price)
       + cell(r.avg, fmt.pct) + cell(r.mx, fmt.pct) + cell(r.mn, fmt.pct) + cell(r.y, fmt.pct)
       + (r.chg == null ? '<td class="na">N/A</td>'
          : `<td><span class="${r.chg >= 0 ? "pos" : "neg"}">${fmt.pp(r.chg)}</span></td>`)
