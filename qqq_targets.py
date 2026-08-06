@@ -56,11 +56,14 @@ STOCKANALYSIS_URL = "https://stockanalysis.com/list/sp-500-stocks/__data.json"
 TV_SCANNER_URL = "https://scanner.tradingview.com/symbol"
 TV_SCAN_BATCH_URL = "https://scanner.tradingview.com/america/scan"
 TV_FIELDS = ("close,price_target_average,price_target_high,price_target_low,"
-             "price_earnings_ttm,earnings_per_share_forecast_next_fy")
+             "price_earnings_ttm,earnings_per_share_forecast_next_fy,change_abs")
 TV_COLUMNS = ["close", "price_target_average", "price_target_high", "price_target_low",
               # Trailing P/E comes straight from the API; there is no forward-P/E
               # field, so it is derived from next-fiscal-year EPS consensus.
-              "price_earnings_ttm", "earnings_per_share_forecast_next_fy"]
+              "price_earnings_ttm", "earnings_per_share_forecast_next_fy",
+              # close - change_abs is the prior session's close, used to fill the
+              # previous-price column when no stored snapshot covers this ticker.
+              "change_abs"]
 TV_EXCHANGES = ("NASDAQ", "NYSE", "AMEX", "CBOE")
 BATCH_SIZE = 150
 
@@ -283,7 +286,7 @@ def fetch_all_targets_batch(tickers):
                 if key not in found:
                     still.append(t)
                     continue
-                close, avg, high, low, pe_ttm, fwd_eps = found[key]
+                close, avg, high, low, pe_ttm, fwd_eps, chg_abs = found[key]
                 if close is None or avg is None:
                     log.warning("%s: no price target data", t)
                     continue  # resolved on this exchange, just no coverage
@@ -291,7 +294,9 @@ def fetch_all_targets_batch(tickers):
                           "high": float(high) if high is not None else None,
                           "low": float(low) if low is not None else None,
                           "pe_ttm": _pos(pe_ttm),
-                          "pe_fwd": _fwd_pe(close, fwd_eps)}
+                          "pe_fwd": _fwd_pe(close, fwd_eps),
+                          "prev_close": (float(close) - float(chg_abs)
+                                         if chg_abs is not None else None)}
             remaining = still
     for t in remaining:
         log.warning("%s: not found on %s", t, "/".join(TV_EXCHANGES))
@@ -350,6 +355,8 @@ async def fetch_targets(client, sem, ticker):
                     "pe_ttm": _pos(data.get("price_earnings_ttm")),
                     "pe_fwd": _fwd_pe(current,
                                       data.get("earnings_per_share_forecast_next_fy")),
+                    "prev_close": (float(current) - float(data["change_abs"])
+                                   if data.get("change_abs") is not None else None),
                 }
             except Exception as exc:
                 if attempt == MAX_TRIES:
@@ -475,11 +482,22 @@ def build_rows(holdings, results, previous):
         avg_pct = pct(d["avg"], cur) if d else None
         max_pct = pct(d["high"], cur) if d else None
         min_pct = pct(d["low"], cur) if d else None
+        # Preferred basis: the stored snapshot, which pairs the prior price with
+        # the prior *target*, so the change reflects both. When no snapshot covers
+        # this ticker, fall back to the prior session's close: the price is exact,
+        # but the prior target is unknowable (no source publishes historical
+        # consensus targets), so the derived figures assume the target was
+        # unchanged and isolate the price effect. Those are flagged estimated.
         y_price = y_avg_pct = None
+        estimated = False
         if t in previous:
             y_cur, y_avg = previous[t]
             y_price = y_cur
             y_avg_pct = pct(y_avg, y_cur)
+        elif d and d.get("prev_close"):
+            y_price = d["prev_close"]
+            y_avg_pct = pct(d["avg"], y_price)
+            estimated = True
         change_pp = (avg_pct - y_avg_pct
                      if avg_pct is not None and y_avg_pct is not None else None)
         rows.append({"ticker": t, "name": name, "current": cur,
@@ -488,7 +506,7 @@ def build_rows(holdings, results, previous):
                      "avg_target": d["avg"] if d else None, "avg_pct": avg_pct,
                      "max_pct": max_pct, "min_pct": min_pct,
                      "y_price": y_price, "y_avg_pct": y_avg_pct,
-                     "change_pp": change_pp})
+                     "change_pp": change_pp, "estimated": estimated})
     rows.sort(key=lambda r: (r["avg_pct"] is None,
                              -(r["avg_pct"] if r["avg_pct"] is not None else 0)))
     return rows
@@ -497,6 +515,12 @@ def build_rows(holdings, results, previous):
 HEADERS = ["Ticker", "Name", "Price", "Yday Price", "P/E", "Fwd P/E", "Avg Tgt",
            "Avg Tgt %", "Max Tgt %", "Min Tgt %", "Yday Avg %", "Chg (pp)"]
 LEFT_ALIGNED = {0, 1}  # Ticker and Name columns
+
+
+def _est(text, estimated):
+    """Mark a value derived without a stored snapshot, so it never reads as
+    recorded history."""
+    return ("~" + text) if (estimated and text != "N/A") else text
 
 
 def _clip(name):
@@ -513,8 +537,9 @@ def print_table(rows):
               "%.1f" % r["pe_fwd"] if r["pe_fwd"] is not None else "N/A",
               "%.2f" % r["avg_target"] if r["avg_target"] is not None else "N/A",
               fmt_pct(r["avg_pct"]), fmt_pct(r["max_pct"]), fmt_pct(r["min_pct"]),
-              fmt_pct(r["y_avg_pct"]),
-              "%+.2f" % r["change_pp"] if r["change_pp"] is not None else "N/A"]
+              _est(fmt_pct(r["y_avg_pct"]), r["estimated"]),
+              _est("%+.2f" % r["change_pp"] if r["change_pp"] is not None else "N/A",
+                   r["estimated"])]
              for r in rows]
     widths = [max(len(HEADERS[i]), max((len(row[i]) for row in table), default=0))
               for i in range(len(HEADERS))]
@@ -535,7 +560,7 @@ def write_csv(rows, universe, today):
         w.writerow(["ticker", "company_name", "current_price", "yesterday_price",
                     "pe_ttm", "pe_forward", "avg_target", "avg_target_pct",
                     "max_target_pct", "min_target_pct", "yesterday_avg_target_pct",
-                    "change_pp"])
+                    "change_pp", "prev_basis"])
         for r in rows:
             w.writerow([r["ticker"], r["name"],
                         round(r["current"], 4) if r["current"] is not None else "",
@@ -547,7 +572,10 @@ def write_csv(rows, universe, today):
                         round(r["max_pct"], 2) if r["max_pct"] is not None else "",
                         round(r["min_pct"], 2) if r["min_pct"] is not None else "",
                         round(r["y_avg_pct"], 2) if r["y_avg_pct"] is not None else "",
-                        round(r["change_pp"], 2) if r["change_pp"] is not None else ""])
+                        round(r["change_pp"], 2) if r["change_pp"] is not None else "",
+                        ("" if r["y_price"] is None else
+                         "prior-session close (target assumed unchanged)"
+                         if r["estimated"] else "stored snapshot")])
     return path
 
 
@@ -569,7 +597,8 @@ def write_report(report_universes, today):
                             "fpe": _round(r["pe_fwd"], 1),
                             "avg": _round(r["avg_pct"]), "mx": _round(r["max_pct"]),
                             "mn": _round(r["min_pct"]), "y": _round(r["y_avg_pct"]),
-                            "chg": _round(r["change_pp"])} for r in rows]}
+                            "chg": _round(r["change_pp"]),
+                            "est": r["estimated"]} for r in rows]}
             for key, (label, rows) in report_universes.items()
         },
     }
