@@ -505,6 +505,39 @@ def write_csv(rows, universe, today):
     return path
 
 
+def write_report(report_universes, today):
+    """Render output/report.html from report_template.html with the day's data
+    embedded — a self-contained page, refreshed on every run."""
+    template_path = BASE_DIR / "report_template.html"
+    if not template_path.exists():
+        log.warning("report_template.html missing; skipping HTML report")
+        return None
+    payload = {
+        "date": today.isoformat(),
+        "universes": {
+            key: {"label": label,
+                  "rows": [{"t": r["ticker"], "n": r["name"],
+                            "price": r["current"], "avg_t": r["avg_target"],
+                            "avg": _round(r["avg_pct"]), "mx": _round(r["max_pct"]),
+                            "mn": _round(r["min_pct"]), "y": _round(r["y_avg_pct"]),
+                            "chg": _round(r["change_pp"])} for r in rows]}
+            for key, (label, rows) in report_universes.items()
+        },
+    }
+    html = (template_path.read_text()
+            .replace("__DATA__", json.dumps(payload))
+            .replace("__DATE__", today.isoformat())
+            .replace("__GENERATED__", time.strftime("%Y-%m-%d %H:%M")))
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    path = OUTPUT_DIR / "report.html"
+    path.write_text(html)
+    return path
+
+
+def _round(v, nd=2):
+    return None if v is None else round(v, nd)
+
+
 def print_summary(rows):
     top_upside = [r for r in rows if r["avg_pct"] is not None][:5]
     movers = sorted((r for r in rows if r["change_pp"] is not None and r["change_pp"] > 0),
@@ -571,14 +604,20 @@ def main():
     finally:
         conn.close()
 
+    report_universes = {}
     for key, (label, holdings) in universes.items():
         rows = build_rows(holdings, results, previous)
+        report_universes[key] = (label, rows)
         print()
         print("=" * 30, label, "=" * 30)
         print_table(rows)
         print_summary(rows)
         csv_path = write_csv(rows, key, today)
         log.info("%s CSV written to %s", label, csv_path)
+
+    report_path = write_report(report_universes, today)
+    if report_path:
+        log.info("HTML report written to %s", report_path)
 
 
 if __name__ == "__main__":

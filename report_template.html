@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analyst price-target upside — __DATE__</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:       #f9f9f7;
+    --surface:    #fcfcfb;
+    --ink-1:      #0b0b0b;
+    --ink-2:      #52514e;
+    --muted:      #898781;
+    --grid:       #e1e0d9;
+    --baseline:   #c3c2b7;
+    --border:     rgba(11,11,11,0.10);
+    --up:         #2a78d6;   /* diverging cool pole / single series */
+    --down:       #e34948;   /* diverging warm pole */
+    --delta-good: #006300;
+    --delta-bad:  #d03b3b;
+    --wash:       rgba(11,11,11,0.045);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page:       #0d0d0d;
+      --surface:    #1a1a19;
+      --ink-1:      #ffffff;
+      --ink-2:      #c3c2b7;
+      --muted:      #898781;
+      --grid:       #2c2c2a;
+      --baseline:   #383835;
+      --border:     rgba(255,255,255,0.10);
+      --up:         #3987e5;
+      --down:       #e66767;
+      --delta-good: #0ca30c;
+      --delta-bad:  #e66767;
+      --wash:       rgba(255,255,255,0.06);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:       #0d0d0d;
+    --surface:    #1a1a19;
+    --ink-1:      #ffffff;
+    --ink-2:      #c3c2b7;
+    --muted:      #898781;
+    --grid:       #2c2c2a;
+    --baseline:   #383835;
+    --border:     rgba(255,255,255,0.10);
+    --up:         #3987e5;
+    --down:       #e66767;
+    --delta-good: #0ca30c;
+    --delta-bad:  #e66767;
+    --wash:       rgba(255,255,255,0.06);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink-1);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 24px 20px 48px; }
+
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  h1 { font-size: 20px; font-weight: 650; margin: 0; }
+  .date { color: var(--ink-2); }
+
+  .controls { display: flex; align-items: center; gap: 10px; margin: 14px 0 18px; flex-wrap: wrap; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+  .seg button {
+    appearance: none; border: 0; background: transparent; color: var(--ink-2);
+    font: 600 13px system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 7px 14px; cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { background: var(--wash); color: var(--ink-1); }
+  .theme-btn {
+    margin-left: auto; appearance: none; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); color: var(--ink-2); padding: 7px 12px; cursor: pointer;
+    font: 600 13px system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .tile .lbl { font-size: 12px; color: var(--ink-2); }
+  .tile .val { font-size: 26px; font-weight: 650; margin-top: 2px; }
+  .tile .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .tile .val .pos { color: var(--delta-good); }
+  .tile .val .neg { color: var(--delta-bad); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px 12px; margin-bottom: 18px; }
+  .card h2 { font-size: 14px; font-weight: 650; margin: 0 0 2px; }
+  .card .sub { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+  svg { display: block; width: 100%; height: auto; }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .empty { color: var(--muted); font-size: 13px; padding: 18px 0 10px; }
+
+  .chart-row { cursor: default; }
+  .chart-row:hover .row-wash, .chart-row:focus .row-wash { fill: var(--wash); }
+  .chart-row:focus { outline: none; }
+
+  .tooltip {
+    position: fixed; z-index: 10; pointer-events: none; display: none;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.18); padding: 9px 12px; font-size: 12.5px;
+    max-width: 260px; color: var(--ink-2);
+  }
+  .tooltip .tt-title { color: var(--ink-1); font-weight: 650; margin-bottom: 3px; }
+  .tooltip .num { font-variant-numeric: tabular-nums; color: var(--ink-1); }
+
+  .tablecard { padding: 0; overflow: hidden; }
+  .tablecard h2 { padding: 16px 18px 0; }
+  .tablecard .sub { padding: 0 18px; }
+  .tscroll { overflow-x: auto; max-height: 640px; overflow-y: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  thead th {
+    position: sticky; top: 0; background: var(--surface); z-index: 2;
+    text-align: right; font-weight: 600; color: var(--ink-2); cursor: pointer;
+    padding: 8px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; user-select: none;
+  }
+  thead th.l { text-align: left; }
+  thead th .arr { color: var(--muted); font-size: 10px; }
+  tbody td { padding: 6px 10px; border-bottom: 1px solid var(--grid); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tbody td.l { text-align: left; font-variant-numeric: normal; }
+  tbody td.name { color: var(--ink-2); max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+  tbody tr:hover { background: var(--wash); }
+  td .pos { color: var(--delta-good); }
+  td .neg { color: var(--delta-bad); }
+  td.na { color: var(--muted); }
+
+  footer { color: var(--muted); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Analyst price-target upside</h1>
+    <span class="date">__DATE__</span>
+  </header>
+
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Universe" id="seg"></div>
+    <button class="theme-btn" id="themeBtn" title="Toggle light/dark">◐ Theme</button>
+  </div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card">
+    <h2>Top 20 by average target upside</h2>
+    <p class="sub">Bar = average analyst target vs current price · hairline = min–max analyst range</p>
+    <div id="chartTop"></div>
+  </div>
+
+  <div class="card">
+    <h2>Biggest day-over-day changes</h2>
+    <p class="sub">Change in average-target upside vs the previous run, percentage points</p>
+    <div id="chartChg"></div>
+  </div>
+
+  <div class="card tablecard">
+    <h2>All holdings</h2>
+    <p class="sub">Click a column header to sort</p>
+    <div class="tscroll"><table id="tbl"></table></div>
+  </div>
+
+  <footer>Generated __GENERATED__ · Targets: TradingView analyst estimates · Holdings: Invesco/Schwab (QQQ), stockanalysis.com (S&amp;P 500) · Analyst targets are opinions, not predictions.</footer>
+</div>
+<div class="tooltip" id="tt"></div>
+
+<script>
+const DATA = __DATA__;
+
+const $ = (s) => document.querySelector(s);
+let universe = Object.keys(DATA.universes)[0];
+let sortKey = "avg", sortDir = -1;
+
+const fmt = {
+  price: (v) => v == null ? "N/A" : v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2}),
+  pct:   (v) => v == null ? "N/A" : (v > 0 ? "+" : "") + v.toFixed(1) + "%",
+  pp:    (v) => v == null ? "N/A" : (v > 0 ? "+" : "") + v.toFixed(2),
+};
+
+/* ---------- theme ---------- */
+$("#themeBtn").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  const osDark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const now = cur ? (cur === "dark" ? "light" : "dark") : (osDark ? "light" : "dark");
+  document.documentElement.setAttribute("data-theme", now);
+  render();
+});
+
+/* ---------- universe toggle ---------- */
+function buildSeg() {
+  const seg = $("#seg");
+  seg.innerHTML = "";
+  for (const key of Object.keys(DATA.universes)) {
+    const b = document.createElement("button");
+    b.textContent = DATA.universes[key].label;
+    b.setAttribute("aria-pressed", String(key === universe));
+    b.addEventListener("click", () => { universe = key; buildSeg(); render(); });
+    seg.appendChild(b);
+  }
+}
+
+/* ---------- tooltip ---------- */
+const tt = $("#tt");
+function showTip(html, x, y) {
+  tt.innerHTML = html;
+  tt.style.display = "block";
+  const r = tt.getBoundingClientRect();
+  tt.style.left = Math.min(x + 14, innerWidth - r.width - 8) + "px";
+  tt.style.top  = Math.min(y + 14, innerHeight - r.height - 8) + "px";
+}
+function hideTip() { tt.style.display = "none"; }
+
+function tipHTML(r) {
+  return `<div class="tt-title">${r.t} — ${r.n}</div>
+    Price <span class="num">$${fmt.price(r.price)}</span> · Avg target <span class="num">$${fmt.price(r.avg_t)}</span><br>
+    Avg <span class="num">${fmt.pct(r.avg)}</span> · Range <span class="num">${fmt.pct(r.mn)}</span> to <span class="num">${fmt.pct(r.mx)}</span><br>
+    Prev avg <span class="num">${fmt.pct(r.y)}</span> · Change <span class="num">${fmt.pp(r.chg)}</span> pp`;
+}
+
+/* ---------- shared scale helpers ---------- */
+function niceStep(range, target) {
+  const raw = range / target, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (raw / mag <= m) return m * mag;
+  return 10 * mag;
+}
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+/* ---------- top-20 range chart ---------- */
+function renderTop(rows) {
+  const host = $("#chartTop");
+  const data = rows.filter(r => r.avg != null).slice()
+    .sort((a, b) => b.avg - a.avg).slice(0, 20);
+  if (!data.length) { host.innerHTML = '<div class="empty">No data.</div>'; return; }
+
+  const W = 980, ROW = 30, padL = 178, padR = 86, padT = 22, padB = 8;
+  const H = padT + data.length * ROW + padB;
+  const lo = Math.min(0, ...data.map(r => r.mn ?? r.avg));
+  const hi = Math.max(0, ...data.map(r => r.mx ?? r.avg));
+  const span = hi - lo || 1;
+  const x = (v) => padL + (v - lo) / span * (W - padL - padR);
+  const step = niceStep(span, 6);
+
+  const up = css("--up"), grid = css("--grid"), base = css("--baseline"),
+        ink1 = css("--ink-1"), ink2 = css("--ink-2"), muted = css("--muted");
+
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Top 20 holdings by average analyst target upside">`;
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
+    const gx = x(v);
+    s += `<line x1="${gx}" y1="${padT - 6}" x2="${gx}" y2="${H - padB}" stroke="${v === 0 ? base : grid}" stroke-width="1"/>`;
+    s += `<text x="${gx}" y="${padT - 10}" font-size="11" fill="${muted}" text-anchor="middle" style="font-variant-numeric:tabular-nums">${v > 0 ? "+" : ""}${Math.round(v)}%</text>`;
+  }
+  data.forEach((r, i) => {
+    const y0 = padT + i * ROW, yc = y0 + ROW / 2;
+    s += `<g class="chart-row" tabindex="0" data-i="${i}">`;
+    s += `<rect class="row-wash" x="0" y="${y0}" width="${W}" height="${ROW}" fill="transparent"/>`;
+    s += `<text x="${padL - 64}" y="${yc + 4}" font-size="12.5" font-weight="650" fill="${ink1}" text-anchor="end" style="font-variant-numeric:tabular-nums">${r.t}</text>`;
+    const nm = r.n.length > 9 ? r.n.slice(0, 8) + "…" : r.n;
+    s += `<text x="${padL - 58}" y="${yc + 4}" font-size="11.5" fill="${muted}">${nm}</text>`;
+    if (r.mn != null && r.mx != null) {
+      s += `<line x1="${x(r.mn)}" y1="${yc}" x2="${x(r.mx)}" y2="${yc}" stroke="${base}" stroke-width="1"/>`;
+      s += `<line x1="${x(r.mn)}" y1="${yc - 4}" x2="${x(r.mn)}" y2="${yc + 4}" stroke="${base}" stroke-width="1"/>`;
+      s += `<line x1="${x(r.mx)}" y1="${yc - 4}" x2="${x(r.mx)}" y2="${yc + 4}" stroke="${base}" stroke-width="1"/>`;
+    }
+    const bx0 = x(Math.min(0, r.avg)), bx1 = x(Math.max(0, r.avg));
+    const bw = Math.max(bx1 - bx0, 1), bh = 12, by = yc - bh / 2, rr = Math.min(4, bw);
+    s += r.avg >= 0
+      ? `<path d="M${bx0},${by} h${bw - rr} a${rr},${rr} 0 0 1 ${rr},${rr} v${bh - 2 * rr} a${rr},${rr} 0 0 1 ${-rr},${rr} h${-(bw - rr)} z" fill="${up}"/>`
+      : `<path d="M${bx1},${by} h${-(bw - rr)} a${rr},${rr} 0 0 0 ${-rr},${rr} v${bh - 2 * rr} a${rr},${rr} 0 0 0 ${rr},${rr} h${bw - rr} z" fill="${css("--down")}"/>`;
+    const lx = (r.mx != null ? x(r.mx) : bx1) + 10;
+    s += `<text x="${lx}" y="${yc + 4}" font-size="12" fill="${ink2}" style="font-variant-numeric:tabular-nums">${fmt.pct(r.avg)}</text>`;
+    s += `</g>`;
+  });
+  s += `</svg>`;
+  host.innerHTML = s;
+  hookRows(host, data);
+}
+
+/* ---------- day-over-day movers (diverging) ---------- */
+function renderChg(rows) {
+  const host = $("#chartChg");
+  const have = rows.filter(r => r.chg != null);
+  if (!have.length) {
+    host.innerHTML = '<div class="empty">Populates after the next run — needs two dates of history (first comparison: tomorrow).</div>';
+    return;
+  }
+  const upEnd = have.slice().sort((a, b) => b.chg - a.chg).slice(0, 8).filter(r => r.chg > 0);
+  const dnEnd = have.slice().sort((a, b) => a.chg - b.chg).slice(0, 8).filter(r => r.chg < 0);
+  const data = [...upEnd, ...dnEnd.reverse()];
+  if (!data.length) { host.innerHTML = '<div class="empty">No day-over-day movement.</div>'; return; }
+
+  const W = 980, ROW = 30, padL = 178, padR = 86, padT = 22, padB = 8;
+  const H = padT + data.length * ROW + padB;
+  const lo = Math.min(0, ...data.map(r => r.chg)), hi = Math.max(0, ...data.map(r => r.chg));
+  const span = (hi - lo) || 1;
+  const x = (v) => padL + (v - lo) / span * (W - padL - padR);
+  const step = niceStep(span, 6);
+  const up = css("--up"), down = css("--down"), grid = css("--grid"), base = css("--baseline"),
+        ink1 = css("--ink-1"), ink2 = css("--ink-2"), muted = css("--muted");
+
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Biggest day-over-day changes in average-target upside">`;
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
+    const gx = x(v);
+    s += `<line x1="${gx}" y1="${padT - 6}" x2="${gx}" y2="${H - padB}" stroke="${Math.abs(v) < 1e-9 ? base : grid}" stroke-width="1"/>`;
+    s += `<text x="${gx}" y="${padT - 10}" font-size="11" fill="${muted}" text-anchor="middle" style="font-variant-numeric:tabular-nums">${v > 0 ? "+" : ""}${+v.toFixed(2)}</text>`;
+  }
+  data.forEach((r, i) => {
+    const y0 = padT + i * ROW, yc = y0 + ROW / 2;
+    s += `<g class="chart-row" tabindex="0" data-i="${i}">`;
+    s += `<rect class="row-wash" x="0" y="${y0}" width="${W}" height="${ROW}" fill="transparent"/>`;
+    s += `<text x="${padL - 64}" y="${yc + 4}" font-size="12.5" font-weight="650" fill="${ink1}" text-anchor="end" style="font-variant-numeric:tabular-nums">${r.t}</text>`;
+    const nm = r.n.length > 9 ? r.n.slice(0, 8) + "…" : r.n;
+    s += `<text x="${padL - 58}" y="${yc + 4}" font-size="11.5" fill="${muted}">${nm}</text>`;
+    const pos = r.chg >= 0, bx0 = x(Math.min(0, r.chg)), bx1 = x(Math.max(0, r.chg));
+    const bw = Math.max(bx1 - bx0, 1), bh = 12, by = yc - bh / 2, rr = Math.min(4, bw);
+    s += pos
+      ? `<path d="M${bx0},${by} h${bw - rr} a${rr},${rr} 0 0 1 ${rr},${rr} v${bh - 2 * rr} a${rr},${rr} 0 0 1 ${-rr},${rr} h${-(bw - rr)} z" fill="${up}"/>`
+      : `<path d="M${bx1},${by} h${-(bw - rr)} a${rr},${rr} 0 0 0 ${-rr},${rr} v${bh - 2 * rr} a${rr},${rr} 0 0 0 ${rr},${rr} h${bw - rr} z" fill="${down}"/>`;
+    const lx = pos ? bx1 + 10 : bx0 - 10;
+    s += `<text x="${lx}" y="${yc + 4}" font-size="12" fill="${ink2}" text-anchor="${pos ? "start" : "end"}" style="font-variant-numeric:tabular-nums">${fmt.pp(r.chg)}</text>`;
+    s += `</g>`;
+  });
+  s += `</svg>`;
+  host.innerHTML = s;
+  hookRows(host, data);
+}
+
+function hookRows(host, data) {
+  host.querySelectorAll(".chart-row").forEach(g => {
+    const r = data[+g.dataset.i];
+    g.addEventListener("mousemove", (e) => showTip(tipHTML(r), e.clientX, e.clientY));
+    g.addEventListener("mouseleave", hideTip);
+    g.addEventListener("focus", () => {
+      const b = g.getBoundingClientRect();
+      showTip(tipHTML(r), b.left + 200, b.top);
+    });
+    g.addEventListener("blur", hideTip);
+  });
+}
+
+/* ---------- KPI tiles ---------- */
+function renderTiles(rows) {
+  const have = rows.filter(r => r.avg != null);
+  const med = have.length
+    ? have.map(r => r.avg).sort((a, b) => a - b)[Math.floor(have.length / 2)] : null;
+  const top = have.length ? have.reduce((a, b) => a.avg > b.avg ? a : b) : null;
+  const movers = rows.filter(r => r.chg != null);
+  const riser = movers.length ? movers.reduce((a, b) => a.chg > b.chg ? a : b) : null;
+  const sign = (v) => v == null ? "" : v >= 0 ? "pos" : "neg";
+  $("#tiles").innerHTML = `
+    <div class="tile"><div class="lbl">Holdings covered</div>
+      <div class="val">${have.length}<span style="color:var(--muted);font-size:16px;font-weight:600"> / ${rows.length}</span></div>
+      <div class="sub">with analyst targets</div></div>
+    <div class="tile"><div class="lbl">Median avg-target upside</div>
+      <div class="val"><span class="${sign(med)}">${fmt.pct(med)}</span></div>
+      <div class="sub">across covered holdings</div></div>
+    <div class="tile"><div class="lbl">Top upside</div>
+      <div class="val">${top ? top.t : "N/A"}</div>
+      <div class="sub">${top ? fmt.pct(top.avg) + " · " + top.n : ""}</div></div>
+    <div class="tile"><div class="lbl">Biggest riser vs prev run</div>
+      <div class="val">${riser ? riser.t : "—"}</div>
+      <div class="sub">${riser ? fmt.pp(riser.chg) + " pp" : "needs two dates of history"}</div></div>`;
+}
+
+/* ---------- table ---------- */
+const COLS = [
+  { k: "t",     h: "Ticker",    l: 1 },
+  { k: "n",     h: "Name",      l: 1 },
+  { k: "price", h: "Price" },
+  { k: "avg_t", h: "Avg Tgt" },
+  { k: "avg",   h: "Avg %" },
+  { k: "mx",    h: "Max %" },
+  { k: "mn",    h: "Min %" },
+  { k: "y",     h: "Prev Avg %" },
+  { k: "chg",   h: "Chg (pp)" },
+];
+function renderTable(rows) {
+  const data = rows.slice().sort((a, b) => {
+    const va = a[sortKey], vb = b[sortKey];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    return (typeof va === "string" ? va.localeCompare(vb) : va - vb) * sortDir;
+  });
+  let s = "<thead><tr>";
+  for (const c of COLS) {
+    const arr = sortKey === c.k ? (sortDir === 1 ? "▲" : "▼") : "";
+    s += `<th class="${c.l ? "l" : ""}" data-k="${c.k}">${c.h} <span class="arr">${arr}</span></th>`;
+  }
+  s += "</tr></thead><tbody>";
+  for (const r of data) {
+    const cell = (v, f, cls) => v == null ? `<td class="na ${cls || ""}">N/A</td>` : `<td class="${cls || ""}">${f(v)}</td>`;
+    s += `<tr><td class="l"><b>${r.t}</b></td><td class="l name" title="${r.n}">${r.n}</td>`
+      + cell(r.price, fmt.price) + cell(r.avg_t, fmt.price)
+      + cell(r.avg, fmt.pct) + cell(r.mx, fmt.pct) + cell(r.mn, fmt.pct) + cell(r.y, fmt.pct)
+      + (r.chg == null ? '<td class="na">N/A</td>'
+         : `<td><span class="${r.chg >= 0 ? "pos" : "neg"}">${fmt.pp(r.chg)}</span></td>`)
+      + "</tr>";
+  }
+  s += "</tbody>";
+  const tbl = $("#tbl");
+  tbl.innerHTML = s;
+  tbl.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
+    const k = th.dataset.k;
+    if (sortKey === k) sortDir = -sortDir;
+    else { sortKey = k; sortDir = (k === "t" || k === "n") ? 1 : -1; }
+    renderTable(rows);
+  }));
+}
+
+function render() {
+  const rows = DATA.universes[universe].rows;
+  renderTiles(rows);
+  renderTop(rows);
+  renderChg(rows);
+  renderTable(rows);
+}
+
+buildSeg();
+render();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+</script>
+</body>
+</html>
