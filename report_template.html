@@ -284,7 +284,7 @@ function renderChg(rows) {
   const host = $("#chartChg");
   const have = rows.filter(r => r.chg != null);
   if (!have.length) {
-    host.innerHTML = '<div class="empty">Populates after the next run — needs two dates of history (first comparison: tomorrow).</div>';
+    host.innerHTML = '<div class="empty">No prior-run values for these holdings yet — this fills in once an earlier run\'s stored snapshot covers them.</div>';
     return;
   }
   const upEnd = have.slice().sort((a, b) => b.chg - a.chg).slice(0, 8).filter(r => r.chg > 0);
@@ -319,8 +319,12 @@ function renderChg(rows) {
     s += pos
       ? `<path d="M${bx0},${by} h${bw - rr} a${rr},${rr} 0 0 1 ${rr},${rr} v${bh - 2 * rr} a${rr},${rr} 0 0 1 ${-rr},${rr} h${-(bw - rr)} z" fill="${up}"/>`
       : `<path d="M${bx1},${by} h${-(bw - rr)} a${rr},${rr} 0 0 0 ${-rr},${rr} v${bh - 2 * rr} a${rr},${rr} 0 0 0 ${rr},${rr} h${bw - rr} z" fill="${down}"/>`;
-    const lx = pos ? bx1 + 10 : bx0 - 10;
-    s += `<text x="${lx}" y="${yc + 4}" font-size="12" fill="${ink2}" text-anchor="${pos ? "start" : "end"}" style="font-variant-numeric:tabular-nums">${fmt.pp(r.chg)}</text>`;
+    // Long negative bars can push an outside-left label into the name gutter —
+    // flip those to the right of the zero line, where the row is empty.
+    const fitsLeft = bx0 - 10 - String(fmt.pp(r.chg)).length * 7 > padL;
+    const outside = pos || !fitsLeft;
+    const lx = outside ? bx1 + 10 : bx0 - 10;
+    s += `<text x="${lx}" y="${yc + 4}" font-size="12" fill="${ink2}" text-anchor="${outside ? "start" : "end"}" style="font-variant-numeric:tabular-nums">${fmt.pp(r.chg)}</text>`;
     s += `</g>`;
   });
   s += `</svg>`;

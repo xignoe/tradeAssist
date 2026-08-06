@@ -394,10 +394,14 @@ def open_db():
 
 
 def save_today(conn, today, results):
+    """Upsert this run's successful tickers. Deliberately does NOT clear the
+    day's other rows first: a degraded run (rate limit, network blip) would
+    otherwise destroy good rows written earlier the same day, and analyst
+    targets can't be re-fetched for a past date. The (date, ticker) primary key
+    keeps re-runs idempotent per ticker."""
     rows = [(today.isoformat(), t, d["current"], d["avg"], d["high"], d["low"])
             for t, d in results.items() if d is not None]
     with conn:
-        conn.execute("DELETE FROM targets WHERE date = ?", (today.isoformat(),))
         conn.executemany(
             "INSERT OR REPLACE INTO targets VALUES (?, ?, ?, ?, ?, ?)", rows)
     return len(rows)
@@ -594,6 +598,11 @@ def main():
         results = fetch_targets_yfinance(all_tickers)
         ok = sum(1 for v in results.values() if v is not None)
         log.info("Targets: %d/%d tickers fetched from yfinance", ok, len(all_tickers))
+    if ok < len(all_tickers) * 0.9:
+        log.warning("DEGRADED RUN: only %d/%d tickers fetched — today's stored "
+                    "snapshot is incomplete, which will leave gaps in tomorrow's "
+                    "day-over-day columns. Consider re-running once the source "
+                    "recovers.", ok, len(all_tickers))
 
     conn = open_db()
     try:
