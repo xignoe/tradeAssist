@@ -7,3 +7,4 @@ qqq_targets.db
 run*.out
 run*.err
 .claude/
+prices.pkl

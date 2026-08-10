@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backtest — buy the biggest gap to target, sell near target</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:#f9f9f7; --surface:#fcfcfb; --ink-1:#0b0b0b; --ink-2:#52514e;
+    --muted:#898781; --grid:#e1e0d9; --baseline:#c3c2b7;
+    --border:rgba(11,11,11,0.10); --wash:rgba(11,11,11,0.045);
+    --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
+    --good:#006300; --bad:#d03b3b; --warn-bg:rgba(250,178,25,0.10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page:#0d0d0d; --surface:#1a1a19; --ink-1:#fff; --ink-2:#c3c2b7;
+      --muted:#898781; --grid:#2c2c2a; --baseline:#383835;
+      --border:rgba(255,255,255,0.10); --wash:rgba(255,255,255,0.06);
+      --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+      --good:#0ca30c; --bad:#e66767; --warn-bg:rgba(250,178,25,0.10);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:#0d0d0d; --surface:#1a1a19; --ink-1:#fff; --ink-2:#c3c2b7;
+    --muted:#898781; --grid:#2c2c2a; --baseline:#383835;
+    --border:rgba(255,255,255,0.10); --wash:rgba(255,255,255,0.06);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+    --good:#0ca30c; --bad:#e66767; --warn-bg:rgba(250,178,25,0.10);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--page); color:var(--ink-1);
+         font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap { max-width:1000px; margin:0 auto; padding:26px 20px 56px; }
+  h1 { font-size:21px; font-weight:650; margin:0 0 4px; }
+  .lede { color:var(--ink-2); margin:0 0 18px; max-width:74ch; }
+  .controls { display:flex; gap:10px; align-items:center; margin-bottom:18px; }
+  .seg { display:inline-flex; border:1px solid var(--border); border-radius:8px;
+         overflow:hidden; background:var(--surface); }
+  .seg button { appearance:none; border:0; background:transparent; color:var(--ink-2);
+    font:600 13px system-ui,sans-serif; padding:7px 14px; cursor:pointer; }
+  .seg button[aria-pressed="true"] { background:var(--wash); color:var(--ink-1); }
+  .theme-btn { margin-left:auto; appearance:none; border:1px solid var(--border);
+    border-radius:8px; background:var(--surface); color:var(--ink-2);
+    padding:7px 12px; cursor:pointer; font:600 13px system-ui,sans-serif; }
+
+  .verdict { background:var(--surface); border:1px solid var(--border);
+    border-left:3px solid var(--s2); border-radius:10px; padding:14px 16px; margin-bottom:18px; }
+  .verdict h2 { font-size:14px; margin:0 0 6px; }
+  .verdict p { margin:0 0 6px; color:var(--ink-2); }
+  .verdict p:last-child { margin-bottom:0; }
+
+  .card { background:var(--surface); border:1px solid var(--border);
+          border-radius:10px; padding:16px 18px 14px; margin-bottom:18px; }
+  .card h2 { font-size:14px; font-weight:650; margin:0 0 2px; }
+  .card .sub { font-size:12px; color:var(--muted); margin:0 0 12px; }
+  svg { display:block; width:100%; height:auto; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; margin:10px 0 0; font-size:12.5px; color:var(--ink-2); }
+  .legend i { display:inline-block; width:14px; height:3px; border-radius:2px;
+              vertical-align:middle; margin-right:6px; }
+
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th { text-align:right; font-weight:600; color:var(--ink-2); padding:8px 10px;
+       border-bottom:1px solid var(--grid); white-space:nowrap; }
+  th.l, td.l { text-align:left; }
+  td { padding:7px 10px; border-bottom:1px solid var(--grid); text-align:right;
+       font-variant-numeric:tabular-nums; white-space:nowrap; }
+  tbody tr:hover { background:var(--wash); }
+  .pos { color:var(--good); } .neg { color:var(--bad); }
+  .best { font-weight:650; }
+  .note { font-size:12.5px; color:var(--muted); margin-top:10px; }
+  .caveats li { color:var(--ink-2); margin-bottom:7px; }
+  footer { color:var(--muted); font-size:12px; margin-top:8px; }
+  .tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:99px;
+         background:var(--warn-bg); color:var(--ink-2); border:1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Backtest — buy the biggest gap to target, sell near target, repeat</h1>
+  <p class="lede">Rank the universe by upside to an anchor target, hold the top N equally
+  weighted, sell each name once price closes within 20% of its target, refill from the top
+  of the ranking. Signals measured at the close, filled at the next close, 5&nbsp;bps per trade.</p>
+
+  <div class="verdict">
+    <h2>What this does and does not test <span class="tag">read first</span></h2>
+    <p><b>The anchor is a trailing 52-week high, not an analyst price target.</b> Only 4 days of
+    point-in-time analyst targets exist (the daily runs started this week), and no reachable
+    source publishes historical consensus targets. Feeding <i>today's</i> targets into past
+    prices would leak the future into the past and manufacture a spectacular, meaningless
+    result — so it is not offered.</p>
+    <p>What is tested is the same machinery — buy the biggest discount to an anchor, sell on
+    recovery toward it, rotate — with an anchor that was genuinely knowable each day. Treat it
+    as evidence about the strategy's <i>shape</i>, not a forecast of the analyst-target version.</p>
+  </div>
+
+  <div class="controls">
+    <div class="seg" id="seg" role="group" aria-label="Universe"></div>
+    <button class="theme-btn" id="themeBtn">◐ Theme</button>
+  </div>
+
+  <div class="card">
+    <h2>Growth of $100,000</h2>
+    <p class="sub">Log scale — equal vertical distance is equal percentage gain</p>
+    <div id="chart"></div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="card">
+    <h2>Performance</h2>
+    <p class="sub">The fair comparison is the equal-weight universe: it carries the same
+    survivorship bias as the strategy</p>
+    <table id="metrics"></table>
+    <p class="note" id="tradeNote"></p>
+  </div>
+
+  <div class="card">
+    <h2>Parameter sweep</h2>
+    <p class="sub">Does the result survive changing the knobs? Sharpe vs the equal-weight
+    universe baseline</p>
+    <table id="sweep"></table>
+  </div>
+
+  <div class="card">
+    <h2>What would break this in live trading</h2>
+    <ul class="caveats">
+      <li><b>Survivorship bias, and it bites this strategy hardest.</b> The universe is
+      <i>today's</i> index membership, so every name shown recovered enough to still be in the
+      index. A "buy what fell furthest" rule is exactly the rule that would have bought the
+      names that never came back — and they are missing here.</li>
+      <li><b>The exit is not guaranteed.</b> A position only sells when it climbs to within 20%
+      of its anchor. Names that keep falling are held indefinitely, which is why drawdowns run
+      deeper than the index.</li>
+      <li><b>Concentration.</b> Ten names is not a diversified portfolio; the dispersion between
+      best and worst trade is enormous.</li>
+      <li><b>Costs modelled are optimistic</b> — 5 bps per trade, no slippage on the small,
+      beaten-down, often illiquid names this strategy selects, no taxes on short holds.</li>
+    </ul>
+  </div>
+
+  <footer>Prices: Yahoo Finance, split/dividend adjusted · Backtests describe the past under
+  stated assumptions and do not predict returns · Not investment advice.</footer>
+</div>
+
+<script>
+const DATA = __DATA__;
+const $ = s => document.querySelector(s);
+let uni = "sp500";
+const COLORS = ["--s1","--s2","--s3","--s4"];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const pct = v => v == null ? "N/A" : (v*100).toFixed(1) + "%";
+
+$("#themeBtn").onclick = () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  const osDark = matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.setAttribute("data-theme",
+    cur ? (cur === "dark" ? "light" : "dark") : (osDark ? "light" : "dark"));
+  render();
+};
+
+function buildSeg() {
+  const seg = $("#seg"); seg.innerHTML = "";
+  for (const [k, label] of [["sp500","S&P 500"],["qqq","QQQ"]]) {
+    const b = document.createElement("button");
+    b.textContent = label + " universe";
+    b.setAttribute("aria-pressed", String(k === uni));
+    b.onclick = () => { uni = k; buildSeg(); render(); };
+    seg.appendChild(b);
+  }
+}
+
+function renderChart(d) {
+  const W = 960, H = 380, padL = 56, padR = 150, padT = 14, padB = 30;
+  const all = d.series.flatMap(s => s.pts.map(p => p[1]));
+  const lo = Math.min(...all), hi = Math.max(...all);
+  const y0 = Math.log10(lo * 0.95), y1 = Math.log10(hi * 1.05);
+  const dates = d.series[0].pts.map(p => new Date(p[0]).getTime());
+  const t0 = Math.min(...dates), t1 = Math.max(...dates);
+  const X = t => padL + (t - t0) / (t1 - t0) * (W - padL - padR);
+  const Y = v => padT + (1 - (Math.log10(v) - y0) / (y1 - y0)) * (H - padT - padB);
+  const grid = css("--grid"), muted = css("--muted"), base = css("--baseline");
+
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Growth of $100,000, log scale">`;
+  for (const v of [100000,200000,400000,800000,1600000]) {
+    if (v < lo*0.95 || v > hi*1.05) continue;
+    s += `<line x1="${padL}" y1="${Y(v)}" x2="${W-padR}" y2="${Y(v)}" stroke="${grid}" stroke-width="1"/>`;
+    s += `<text x="${padL-8}" y="${Y(v)+4}" font-size="11" fill="${muted}" text-anchor="end" style="font-variant-numeric:tabular-nums">$${(v/1000).toFixed(0)}k</text>`;
+  }
+  const yr0 = new Date(t0).getFullYear(), yr1 = new Date(t1).getFullYear();
+  for (let y = yr0 + 1; y <= yr1; y += 2) {
+    const t = new Date(y, 0, 1).getTime(); if (t < t0 || t > t1) continue;
+    s += `<line x1="${X(t)}" y1="${padT}" x2="${X(t)}" y2="${H-padB}" stroke="${grid}" stroke-width="1"/>`;
+    s += `<text x="${X(t)}" y="${H-padB+16}" font-size="11" fill="${muted}" text-anchor="middle">${y}</text>`;
+  }
+  s += `<line x1="${padL}" y1="${H-padB}" x2="${W-padR}" y2="${H-padB}" stroke="${base}" stroke-width="1"/>`;
+
+  d.series.forEach((ser, i) => {
+    const col = css(COLORS[i]);
+    const path = ser.pts.map((p, j) => (j ? "L" : "M") + X(new Date(p[0]).getTime()).toFixed(1)
+                 + "," + Y(p[1]).toFixed(1)).join(" ");
+    s += `<path d="${path}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const last = ser.pts[ser.pts.length-1];
+    s += `<circle cx="${X(new Date(last[0]).getTime())}" cy="${Y(last[1])}" r="4" fill="${col}" stroke="${css("--surface")}" stroke-width="2"/>`;
+  });
+  // direct end-labels, nudged apart so they never overlap
+  const ends = d.series.map((ser,i) => ({i, v: ser.pts[ser.pts.length-1][1],
+                                          y: Y(ser.pts[ser.pts.length-1][1])}))
+                       .sort((a,b) => a.y - b.y);
+  let prev = -1e9;
+  for (const e of ends) {
+    const y = Math.max(e.y, prev + 15); prev = y;
+    s += `<text x="${W-padR+12}" y="${y+4}" font-size="12" fill="${css("--ink-2")}" style="font-variant-numeric:tabular-nums">$${(e.v/1000).toFixed(0)}k</text>`;
+  }
+  s += `</svg>`;
+  $("#chart").innerHTML = s;
+  $("#legend").innerHTML = d.series.map((ser,i) =>
+    `<span><i style="background:${css(COLORS[i])}"></i>${ser.name}</span>`).join("");
+}
+
+function renderMetrics(d) {
+  let s = `<thead><tr><th class="l">Strategy</th><th>Total</th><th>CAGR</th>
+           <th>Volatility</th><th>Sharpe</th><th>Max drawdown</th></tr></thead><tbody>`;
+  const bestSharpe = Math.max(...d.metrics.map(m => m.sharpe));
+  for (const m of d.metrics) {
+    s += `<tr><td class="l">${m.strategy}</td><td>${pct(m.total_return)}</td>
+      <td>${pct(m.cagr)}</td><td>${pct(m.vol)}</td>
+      <td class="${m.sharpe === bestSharpe ? "best" : ""}">${m.sharpe.toFixed(2)}</td>
+      <td class="neg">${pct(m.max_dd)}</td></tr>`;
+  }
+  $("#metrics").innerHTML = s + "</tbody>";
+  const t = d.trades;
+  $("#tradeNote").textContent = t.n
+    ? `${d.start} → ${d.end} · ${t.n} round trips · win rate ${(t.win*100).toFixed(0)}% · `
+      + `median trade ${(t.median_ret*100).toFixed(1)}% over ${t.median_days.toFixed(0)} days · `
+      + `best ${t.best[0]} ${(t.best[1]*100).toFixed(0)}%, worst ${t.worst[0]} ${(t.worst[1]*100).toFixed(0)}%`
+    : "";
+}
+
+function renderSweep(d) {
+  let s = `<thead><tr><th class="l">Positions</th><th class="l">Exit band</th><th>CAGR</th>
+           <th>Volatility</th><th>Sharpe</th><th>Max DD</th><th>Trades</th><th>Win rate</th></tr></thead><tbody>`;
+  for (const r of d.sweep) {
+    const beats = r.sharpe > d.ew_sharpe;
+    s += `<tr><td class="l">${r.n}</td><td class="l">${(r.band*100).toFixed(0)}%</td>
+      <td>${pct(r.cagr)}</td><td>${pct(r.vol)}</td>
+      <td class="${beats ? "pos" : ""}">${r.sharpe.toFixed(2)}</td>
+      <td class="neg">${pct(r.dd)}</td><td>${r.trades}</td>
+      <td>${r.win == null ? "N/A" : (r.win*100).toFixed(0)+"%"}</td></tr>`;
+  }
+  s += `<tr><td class="l"><b>Equal-weight universe</b></td><td class="l">—</td>
+    <td>${pct(d.metrics[1].cagr)}</td><td>${pct(d.metrics[1].vol)}</td>
+    <td class="best">${d.ew_sharpe.toFixed(2)}</td><td class="neg">${pct(d.metrics[1].max_dd)}</td>
+    <td>—</td><td>—</td></tr>`;
+  $("#sweep").innerHTML = s + "</tbody>";
+}
+
+function render() {
+  const d = DATA[uni];
+  renderChart(d); renderMetrics(d); renderSweep(d);
+}
+buildSeg(); render();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+</script>
+</body>
+</html>

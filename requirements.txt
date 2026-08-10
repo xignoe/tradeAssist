@@ -1,1 +1,3 @@
 httpx>=0.27
+yfinance>=0.2
+pandas>=2.0
