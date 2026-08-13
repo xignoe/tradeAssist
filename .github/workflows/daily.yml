@@ -5,6 +5,13 @@ name: Daily targets
 # weekdays only (markets are shut at the weekend, so there is no new data).
 on:
   schedule:
+    # GitHub explicitly does not guarantee scheduled runs: they can be delayed
+    # or dropped entirely during peak load. A dropped run costs a day that can
+    # never be re-fetched, so we take two shots an hour apart. The run is
+    # idempotent per date, so the second simply refreshes the first.
+    # Both land on the same UTC date and after the US close year-round
+    # (22:30 UTC = 6:30pm EDT / 5:30pm EST).
+    - cron: "30 22 * * 1-5"
     - cron: "30 23 * * 1-5"
   workflow_dispatch:        # lets you (or I) trigger a run by hand
 

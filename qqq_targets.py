@@ -247,12 +247,23 @@ MIN_UNIVERSE = {"qqq": 90, "sp500": 450}
 MIN_TARGET_COVERAGE = 0.90
 
 
-def check_health(universes, results):
+MAX_COLLECTION_GAP_DAYS = 5
+
+
+def check_health(universes, results, last_date=None, today=None):
     """Return a list of problems that mean the data is untrustworthy, not merely
     thin. The caller reports these and exits non-zero so the scheduled run fails
     visibly — a silently empty column is the failure mode worth catching, since
     a missed day can never be re-fetched."""
     problems = []
+    # A gap wider than a long weekend means collection stopped for a while and
+    # nobody noticed. Threshold clears Fri->Mon and holiday weekends.
+    if last_date and today:
+        gap = (today - date.fromisoformat(last_date)).days
+        if gap > MAX_COLLECTION_GAP_DAYS:
+            problems.append("%d days since the last collected snapshot (%s) — "
+                            "the schedule appears to have stopped running"
+                            % (gap, last_date))
     for key, (label, holdings) in universes.items():
         floor = MIN_UNIVERSE.get(key)
         if floor and len(holdings) < floor:
@@ -894,6 +905,9 @@ def main():
     conn = open_db()
     try:
         import_snapshots(conn)
+        row = conn.execute("SELECT MAX(date) FROM targets WHERE date < ?",
+                           (today.isoformat(),)).fetchone()
+        last_date = row[0] if row else None
         previous = load_previous(conn, today, all_tickers)
         saved = save_today(conn, today, results)
         log.info("Saved %d rows for %s (prior data for %d tickers)",
@@ -924,7 +938,7 @@ def main():
     # Everything is saved by this point, so a health failure still keeps the
     # day's data — it just makes the run fail visibly rather than degrade in
     # silence. The scheduled workflow surfaces the non-zero exit as a failed run.
-    problems = check_health(universes, results)
+    problems = check_health(universes, results, last_date, today)
     if problems:
         for p in problems:
             log.error("HEALTH: %s", p)
