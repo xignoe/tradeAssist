@@ -169,6 +169,16 @@
 
   <div class="controls">
     <div class="seg" role="group" aria-label="Universe" id="seg"></div>
+    <label style="font-size:12.5px;color:var(--ink-2)">Coverage
+      <select id="minAn" style="margin-left:6px;padding:6px 8px;border-radius:8px;
+        border:1px solid var(--border);background:var(--surface);color:var(--ink-1);
+        font:inherit;font-size:12.5px">
+        <option value="0">all holdings</option>
+        <option value="5">≥ 5 analysts</option>
+        <option value="15">≥ 15 analysts</option>
+        <option value="25">≥ 25 analysts</option>
+      </select>
+    </label>
     <button class="theme-btn" id="themeBtn" title="Toggle light/dark">◐ Theme</button>
   </div>
 
@@ -182,7 +192,9 @@
 
   <div class="card">
     <h2>Biggest day-over-day changes</h2>
-    <p class="sub">Change in average-target upside vs the previous run, percentage points · <span class="est">~</span> = estimated from prior session close (target assumed unchanged)</p>
+    <p class="sub" id="chgSub"></p>
+    <div class="seg" id="chgMode" role="group" aria-label="Change basis"
+         style="margin-bottom:12px"></div>
     <div id="chartChg"></div>
   </div>
 
@@ -219,6 +231,8 @@ const DATA = __DATA__;
 const $ = (s) => document.querySelector(s);
 let universe = Object.keys(DATA.universes)[0];
 let sortKey = "avg", sortDir = -1;
+let minAnalysts = 0;          // coverage filter, scopes the whole page
+let chgMode = "target";       // movers chart: "target" revisions only, or "total"
 
 const fmt = {
   price: (v) => v == null ? "N/A" : v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2}),
@@ -267,6 +281,8 @@ function tipHTML(r) {
     P/E <span class="num">${fmt.ratio(r.pe)}</span> · Forward P/E <span class="num">${fmt.ratio(r.fpe)}</span><br>
     Avg <span class="num">${fmt.pct(r.avg)}</span> · Range <span class="num">${fmt.pct(r.mn)}</span> to <span class="num">${fmt.pct(r.mx)}</span><br>
     Prev avg <span class="num">${fmt.pct(r.y)}</span> · Change <span class="num">${fmt.pp(r.chg)}</span> pp
+    ${r.chg_t == null ? "" : `<br><span style="color:var(--muted)">of which price <span class="num">${fmt.pp(r.chg_p)}</span>, target revision <span class="num">${fmt.pp(r.chg_t)}</span></span>`}
+    ${r.an ? `<br><span style="color:var(--muted)">${r.an} analysts covering</span>` : ""}
     ${r.est ? '<br><span style="color:var(--muted)">~ estimated from prior session close; target assumed unchanged</span>' : ""}`;
 }
 
@@ -331,19 +347,26 @@ function renderTop(rows) {
 /* ---------- day-over-day movers (diverging) ---------- */
 function renderChg(rows) {
   const host = $("#chartChg");
-  const have = rows.filter(r => r.chg != null);
+  // key: which change we rank by — the total move, or only the part analysts caused
+  const key = chgMode === "target" ? "chg_t" : "chg";
+  $("#chgSub").innerHTML = chgMode === "target"
+    ? "Change caused by analysts revising their targets, percentage points — "
+      + "the part that is actually new information"
+    : "Total change in average-target upside vs the previous run, percentage points · "
+      + '<span class="est">~</span> = estimated from prior session close';
+  const have = rows.filter(r => r[key] != null);
   if (!have.length) {
     host.innerHTML = '<div class="empty">No prior-run values for these holdings yet — this fills in once an earlier run\'s stored snapshot covers them.</div>';
     return;
   }
-  const upEnd = have.slice().sort((a, b) => b.chg - a.chg).slice(0, 8).filter(r => r.chg > 0);
-  const dnEnd = have.slice().sort((a, b) => a.chg - b.chg).slice(0, 8).filter(r => r.chg < 0);
+  const upEnd = have.slice().sort((a, b) => b[key] - a[key]).slice(0, 8).filter(r => r[key] > 0.005);
+  const dnEnd = have.slice().sort((a, b) => a[key] - b[key]).slice(0, 8).filter(r => r[key] < -0.005);
   const data = [...upEnd, ...dnEnd.reverse()];
   if (!data.length) { host.innerHTML = '<div class="empty">No day-over-day movement.</div>'; return; }
 
   const W = 980, ROW = 30, padL = 178, padR = 86, padT = 22, padB = 8;
   const H = padT + data.length * ROW + padB;
-  const lo = Math.min(0, ...data.map(r => r.chg)), hi = Math.max(0, ...data.map(r => r.chg));
+  const lo = Math.min(0, ...data.map(r => r[key])), hi = Math.max(0, ...data.map(r => r[key]));
   const span = (hi - lo) || 1;
   const x = (v) => padL + (v - lo) / span * (W - padL - padR);
   const step = niceStep(span, 6);
@@ -363,17 +386,17 @@ function renderChg(rows) {
     s += `<text x="${padL - 64}" y="${yc + 4}" font-size="12.5" font-weight="650" fill="${ink1}" text-anchor="end" style="font-variant-numeric:tabular-nums">${r.t}</text>`;
     const nm = r.n.length > 9 ? r.n.slice(0, 8) + "…" : r.n;
     s += `<text x="${padL - 58}" y="${yc + 4}" font-size="11.5" fill="${muted}">${nm}</text>`;
-    const pos = r.chg >= 0, bx0 = x(Math.min(0, r.chg)), bx1 = x(Math.max(0, r.chg));
+    const pos = r[key] >= 0, bx0 = x(Math.min(0, r[key])), bx1 = x(Math.max(0, r[key]));
     const bw = Math.max(bx1 - bx0, 1), bh = 12, by = yc - bh / 2, rr = Math.min(4, bw);
     s += pos
       ? `<path d="M${bx0},${by} h${bw - rr} a${rr},${rr} 0 0 1 ${rr},${rr} v${bh - 2 * rr} a${rr},${rr} 0 0 1 ${-rr},${rr} h${-(bw - rr)} z" fill="${up}"/>`
       : `<path d="M${bx1},${by} h${-(bw - rr)} a${rr},${rr} 0 0 0 ${-rr},${rr} v${bh - 2 * rr} a${rr},${rr} 0 0 0 ${rr},${rr} h${bw - rr} z" fill="${down}"/>`;
     // Long negative bars can push an outside-left label into the name gutter —
     // flip those to the right of the zero line, where the row is empty.
-    const fitsLeft = bx0 - 10 - String(fmt.pp(r.chg)).length * 7 > padL;
+    const fitsLeft = bx0 - 10 - String(fmt.pp(r[key])).length * 7 > padL;
     const outside = pos || !fitsLeft;
     const lx = outside ? bx1 + 10 : bx0 - 10;
-    s += `<text x="${lx}" y="${yc + 4}" font-size="12" fill="${ink2}" text-anchor="${outside ? "start" : "end"}" style="font-variant-numeric:tabular-nums">${fmt.pp(r.chg)}${r.est ? " ~" : ""}</text>`;
+    s += `<text x="${lx}" y="${yc + 4}" font-size="12" fill="${ink2}" text-anchor="${outside ? "start" : "end"}" style="font-variant-numeric:tabular-nums">${fmt.pp(r[key])}${(r.est && key === "chg") ? " ~" : ""}</text>`;
     s += `</g>`;
   });
   s += `</svg>`;
@@ -423,6 +446,7 @@ function renderTiles(rows) {
 const COLS = [
   { k: "t",     h: "Ticker",    l: 1 },
   { k: "n",     h: "Name",      l: 1 },
+  { k: "an",      h: "Analysts" },
   { k: "price",   h: "Price" },
   { k: "y_price", h: "Yday Price" },
   { k: "pe",    h: "P/E" },
@@ -433,6 +457,7 @@ const COLS = [
   { k: "mn",    h: "Min %" },
   { k: "y",     h: "Prev Avg %" },
   { k: "chg",   h: "Chg (pp)" },
+  { k: "chg_t", h: "Tgt Δ (pp)" },
 ];
 function renderTable(rows) {
   const data = rows.slice().sort((a, b) => {
@@ -452,6 +477,7 @@ function renderTable(rows) {
     const cell = (v, f, cls) => v == null ? `<td class="na ${cls || ""}">N/A</td>` : `<td class="${cls || ""}">${f(v)}</td>`;
     const est = r.est ? ' <span class="est" title="Estimated: no stored snapshot for this holding, so the prior session close is used and the analyst target is assumed unchanged — this isolates the price effect.">~</span>' : "";
     s += `<tr data-t="${r.t}" title="Click for ${r.t} history"><td class="l"><b>${r.t}</b></td><td class="l name" title="${r.n}">${r.n}</td>`
+      + (r.an == null ? '<td class="na">—</td>' : `<td>${r.an}</td>`)
       + cell(r.price, fmt.price) + cell(r.y_price, fmt.price)
       + cell(r.pe, fmt.ratio) + cell(r.fpe, fmt.ratio)
       + cell(r.avg_t, fmt.price)
@@ -459,6 +485,8 @@ function renderTable(rows) {
       + (r.y == null ? '<td class="na">N/A</td>' : `<td>${fmt.pct(r.y)}${est}</td>`)
       + (r.chg == null ? '<td class="na">N/A</td>'
          : `<td><span class="${r.chg >= 0 ? "pos" : "neg"}">${fmt.pp(r.chg)}</span>${est}</td>`)
+      + (r.chg_t == null ? '<td class="na">N/A</td>'
+         : `<td><span class="${r.chg_t >= 0 ? "pos" : "neg"}">${fmt.pp(r.chg_t)}</span></td>`)
       + "</tr>";
   }
   s += "</tbody>";
@@ -561,14 +589,34 @@ $("#mClose").onclick = closeDetail;
 $("#overlay").addEventListener("click", e => { if (e.target.id === "overlay") closeDetail(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeDetail(); });
 
-function render() {
+function buildChgMode() {
+  const host = $("#chgMode"); host.innerHTML = "";
+  for (const [k, label] of [["target", "Target revisions only"], ["total", "Total change"]]) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(k === chgMode));
+    b.onclick = () => { chgMode = k; buildChgMode(); renderChg(visibleRows()); };
+    host.appendChild(b);
+  }
+}
+
+// One filter, applied once, feeding tiles + both charts + the table.
+function visibleRows() {
   const rows = DATA.universes[universe].rows;
+  return minAnalysts ? rows.filter(r => (r.an || 0) >= minAnalysts) : rows;
+}
+
+$("#minAn").onchange = (e) => { minAnalysts = +e.target.value; render(); };
+
+function render() {
+  const rows = visibleRows();
   renderTiles(rows);
   renderTop(rows);
   renderChg(rows);
   renderTable(rows);
 }
 
+buildChgMode();
 buildSeg();
 render();
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
