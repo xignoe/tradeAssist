@@ -36,7 +36,11 @@ import httpx
 BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / "cache"
 OUTPUT_DIR = BASE_DIR / "output"
+DATA_DIR = BASE_DIR / "data"
 DB_PATH = BASE_DIR / "qqq_targets.db"
+
+SNAPSHOT_COLS = ["date", "ticker", "current_price", "avg_target", "max_target",
+                 "min_target", "pe_ttm", "pe_fwd"]
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -445,6 +449,51 @@ def save_today(conn, today, results):
     return len(rows)
 
 
+def write_snapshot(conn, today):
+    """Mirror the day's stored rows to data/YYYY-MM-DD.csv.
+
+    The SQLite file is a derived cache; these text snapshots are the durable
+    record. They diff well in git, so the scheduled cloud run can commit each
+    day's data back to the repo and any checkout can rebuild full history."""
+    DATA_DIR.mkdir(exist_ok=True)
+    rows = conn.execute(
+        "SELECT %s FROM targets WHERE date = ? ORDER BY ticker" % ", ".join(SNAPSHOT_COLS),
+        (today.isoformat(),)).fetchall()
+    if not rows:
+        return None
+    path = DATA_DIR / ("%s.csv" % today.isoformat())
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(SNAPSHOT_COLS)
+        w.writerows(rows)
+    return path
+
+
+def import_snapshots(conn):
+    """Load any data/*.csv days the database doesn't have yet. This is how a
+    fresh clone — or a laptop that missed the days the cloud run captured —
+    catches up to the full history."""
+    if not DATA_DIR.exists():
+        return 0
+    have = {r[0] for r in conn.execute("SELECT DISTINCT date FROM targets")}
+    imported = 0
+    for path in sorted(DATA_DIR.glob("*.csv")):
+        if path.stem in have:
+            continue
+        with open(path) as f:
+            rows = [[r.get(c) or None for c in SNAPSHOT_COLS] for r in csv.DictReader(f)]
+        if rows:
+            with conn:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO targets (%s) VALUES (%s)"
+                    % (", ".join(SNAPSHOT_COLS), ", ".join("?" * len(SNAPSHOT_COLS))),
+                    rows)
+            imported += 1
+    if imported:
+        log.info("Imported %d day(s) of history from data/", imported)
+    return imported
+
+
 def load_history(conn, tickers, days=400):
     """Per-ticker series for the drill-down chart:
     {ticker: [[date, upside_pct, price, avg_target], ...]} oldest first."""
@@ -698,10 +747,14 @@ def main():
 
     conn = open_db()
     try:
+        import_snapshots(conn)
         previous = load_previous(conn, today, all_tickers)
         saved = save_today(conn, today, results)
         log.info("Saved %d rows for %s (prior data for %d tickers)",
                  saved, today, len(previous))
+        snap = write_snapshot(conn, today)
+        if snap:
+            log.info("Snapshot written to %s", snap)
         history = load_history(conn, all_tickers)
     finally:
         conn.close()
