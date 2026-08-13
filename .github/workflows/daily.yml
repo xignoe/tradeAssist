@@ -28,7 +28,13 @@ jobs:
       - name: Install dependencies
         run: pip install --quiet httpx
 
+      # Health problems exit non-zero, but the day's data is already written by
+      # then. Let the step "fail" softly so the commit below still runs, then
+      # fail the job at the end — that way the data is kept AND GitHub emails
+      # you about the failed run instead of it degrading silently.
       - name: Fetch targets
+        id: fetch
+        continue-on-error: true
         run: python qqq_targets.py
 
       - name: Publish report for GitHub Pages
@@ -49,6 +55,13 @@ jobs:
             git pull --rebase --autostash origin main
             git push
           fi
+
+      - name: Fail the run if the data looked wrong
+        if: steps.fetch.outcome == 'failure'
+        run: |
+          echo "::error::Data health check failed — see the 'Fetch targets' step."
+          echo "The day's data was still saved and committed."
+          exit 1
 
       - name: Upload run artifacts
         if: always()

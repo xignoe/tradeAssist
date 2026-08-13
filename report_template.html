@@ -232,7 +232,7 @@ const $ = (s) => document.querySelector(s);
 let universe = Object.keys(DATA.universes)[0];
 let sortKey = "avg", sortDir = -1;
 let minAnalysts = 0;          // coverage filter, scopes the whole page
-let chgMode = "target";       // movers chart: "target" revisions only, or "total"
+let chgMode = "chg_t";        // movers chart: which change column to rank by
 
 const fmt = {
   price: (v) => v == null ? "N/A" : v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2}),
@@ -348,12 +348,13 @@ function renderTop(rows) {
 function renderChg(rows) {
   const host = $("#chartChg");
   // key: which change we rank by — the total move, or only the part analysts caused
-  const key = chgMode === "target" ? "chg_t" : "chg";
-  $("#chgSub").innerHTML = chgMode === "target"
-    ? "Change caused by analysts revising their targets, percentage points — "
-      + "the part that is actually new information"
-    : "Total change in average-target upside vs the previous run, percentage points · "
-      + '<span class="est">~</span> = estimated from prior session close';
+  const key = chgMode;
+  $("#chgSub").innerHTML = ({
+    chg_t: "Target revisions since the previous run, percentage points of upside — the part that is actually new information",
+    r5:    "Cumulative target revisions over the last 5 observations — sustained re-rating rather than a single nudge",
+    r20:   "Cumulative target revisions over the last 20 observations",
+    chg:   'Total change in upside vs the previous run (price + target together) · <span class="est">~</span> = estimated from prior session close',
+  })[chgMode];
   const have = rows.filter(r => r[key] != null);
   if (!have.length) {
     host.innerHTML = '<div class="empty">No prior-run values for these holdings yet — this fills in once an earlier run\'s stored snapshot covers them.</div>';
@@ -457,7 +458,9 @@ const COLS = [
   { k: "mn",    h: "Min %" },
   { k: "y",     h: "Prev Avg %" },
   { k: "chg",   h: "Chg (pp)" },
-  { k: "chg_t", h: "Tgt Δ (pp)" },
+  { k: "chg_t", h: "Tgt Δ 1d" },
+  { k: "r5",    h: "Tgt Δ 5d" },
+  { k: "r20",   h: "Tgt Δ 20d" },
 ];
 function renderTable(rows) {
   const data = rows.slice().sort((a, b) => {
@@ -485,8 +488,8 @@ function renderTable(rows) {
       + (r.y == null ? '<td class="na">N/A</td>' : `<td>${fmt.pct(r.y)}${est}</td>`)
       + (r.chg == null ? '<td class="na">N/A</td>'
          : `<td><span class="${r.chg >= 0 ? "pos" : "neg"}">${fmt.pp(r.chg)}</span>${est}</td>`)
-      + (r.chg_t == null ? '<td class="na">N/A</td>'
-         : `<td><span class="${r.chg_t >= 0 ? "pos" : "neg"}">${fmt.pp(r.chg_t)}</span></td>`)
+      + [r.chg_t, r.r5, r.r20].map(v => v == null ? '<td class="na">N/A</td>'
+          : `<td><span class="${v >= 0 ? "pos" : "neg"}">${fmt.pp(v)}</span></td>`).join("")
       + "</tr>";
   }
   s += "</tbody>";
@@ -591,7 +594,8 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") closeDetail(
 
 function buildChgMode() {
   const host = $("#chgMode"); host.innerHTML = "";
-  for (const [k, label] of [["target", "Target revisions only"], ["total", "Total change"]]) {
+  for (const [k, label] of [["chg_t", "Revisions 1d"], ["r5", "Revisions 5d"],
+                            ["r20", "Revisions 20d"], ["chg", "Total change"]]) {
     const b = document.createElement("button");
     b.textContent = label;
     b.setAttribute("aria-pressed", String(k === chgMode));

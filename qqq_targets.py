@@ -236,6 +236,49 @@ def get_holdings(universe, fetcher, today):
 # Price targets — batch scan (primary path)
 # ----------------------------------------------------------------------------
 
+# Health floors. Every source here is unofficial, and the TradingView scanner
+# answers a renamed field with null rather than an error — so a rename shows up
+# as a column quietly going empty, not as a crash. These floors sit well below
+# observed coverage (avg_target/analysts ~99.7%, pe_ttm ~92%, pe_fwd ~97%) so
+# normal variation never trips them, but a field that stops resolving does.
+FIELD_FLOORS = {"avg": 0.90, "analysts": 0.75, "rating": 0.75,
+                "pe_ttm": 0.55, "pe_fwd": 0.55, "prev_close": 0.75}
+MIN_UNIVERSE = {"qqq": 90, "sp500": 450}
+MIN_TARGET_COVERAGE = 0.90
+
+
+def check_health(universes, results):
+    """Return a list of problems that mean the data is untrustworthy, not merely
+    thin. The caller reports these and exits non-zero so the scheduled run fails
+    visibly — a silently empty column is the failure mode worth catching, since
+    a missed day can never be re-fetched."""
+    problems = []
+    for key, (label, holdings) in universes.items():
+        floor = MIN_UNIVERSE.get(key)
+        if floor and len(holdings) < floor:
+            problems.append("%s holdings returned only %d names (expected >= %d) — "
+                            "the holdings source likely changed shape"
+                            % (label, len(holdings), floor))
+
+    ok = [d for d in results.values() if d is not None]
+    total = len(results)
+    if not total:
+        return problems + ["no tickers were fetched at all"]
+    if len(ok) / total < MIN_TARGET_COVERAGE:
+        problems.append("only %d/%d tickers returned price targets (%.0f%%, floor %.0f%%)"
+                        % (len(ok), total, 100 * len(ok) / total,
+                           100 * MIN_TARGET_COVERAGE))
+    if not ok:
+        return problems
+    for field, floor in FIELD_FLOORS.items():
+        rate = sum(1 for d in ok if d.get(field) is not None) / len(ok)
+        if rate < floor:
+            problems.append("field %r populated for only %.0f%% of fetched tickers "
+                            "(floor %.0f%%) — it may have been renamed upstream"
+                            % (field, rate * 100, floor * 100))
+    return problems
+
+
 def _pos(v):
     """A P/E is only meaningful on positive earnings; negatives read as N/A."""
     return float(v) if v is not None and v > 0 else None
@@ -515,7 +558,68 @@ def load_history(conn, tickers, days=400):
     for ticker, day, price, target in rows:
         hist.setdefault(ticker, []).append(
             [day, round((target / price - 1) * 100, 2), round(price, 2), round(target, 2)])
-    return hist
+    # Restate on today's share basis so the drill-down price line doesn't show a
+    # cliff at a split, and round back down after scaling.
+    return {t: [[d, u, round(p, 2), round(tg, 2)] for d, u, p, tg in split_adjust(s)]
+            for t, s in hist.items()}
+
+
+REVISION_WINDOWS = (5, 20)
+
+
+def _is_split(prev_price, cur_price, prev_upside, cur_upside):
+    """A share split rebases price and target by the same factor on the same day.
+
+    That looks identical to a colossal target revision unless you notice the
+    giveaway: the price moved a long way while the *upside* barely moved, because
+    both sides of the ratio scaled together. Analysts revising targets never
+    track a price move that precisely, so the pair of conditions is specific to
+    a rebasing. Observed live: MNST split ~2:1 with price 91.43 -> 45.98 and
+    target 101.45 -> 50.90, which naively reads as a -102pp cut."""
+    if not prev_price or not cur_price or prev_upside is None or cur_upside is None:
+        return False
+    ratio = cur_price / prev_price
+    return (ratio < 0.8 or ratio > 1.25) and abs(cur_upside - prev_upside) < 2.0
+
+
+def split_adjust(series):
+    """Restate a ticker's history on today's share basis, so a split doesn't
+    masquerade as a revision. Detection runs on the raw series; the cumulative
+    factor is applied afterwards, so an adjusted point is never re-tested."""
+    n = len(series)
+    factors, f = [1.0] * n, 1.0
+    for i in range(n - 1, 0, -1):
+        (_d0, u0, p0, _t0), (_d1, u1, p1, _t1) = series[i - 1], series[i]
+        if _is_split(p0, p1, u0, u1):
+            f *= p1 / p0
+        factors[i - 1] = f
+    return [[d, u, p * fac, t * fac]
+            for (d, u, p, t), fac in zip(series, factors)]
+
+
+def revision_windows(history, windows=REVISION_WINDOWS):
+    """Cumulative target revision over the last N observations, in percentage
+    points of upside — the same unit as the daily Tgt Δ, so they compare directly.
+
+    Counts observations rather than calendar days, so weekends, holidays and any
+    skipped run don't silently shorten the window. Returns None for a window the
+    ticker doesn't yet have enough history to fill, rather than quietly measuring
+    a shorter span.
+    """
+    out = {}
+    for ticker, raw in history.items():
+        series = split_adjust(raw)
+        latest_date, _upside, price, target = series[-1]
+        per_ticker = {}
+        for n in windows:
+            idx = len(series) - 1 - n
+            if idx < 0 or not price:
+                per_ticker[n] = None
+                continue
+            then_target = series[idx][3]
+            per_ticker[n] = (target - then_target) / price * 100.0
+        out[ticker] = per_ticker
+    return out
 
 
 def load_previous(conn, today, tickers):
@@ -547,7 +651,7 @@ def fmt_pct(v, signed=True):
     return ("%+.1f%%" if signed else "%.1f%%") % v
 
 
-def build_rows(holdings, results, previous):
+def build_rows(holdings, results, previous, revisions=None):
     rows = []
     for t, name in holdings:
         d = results.get(t)
@@ -582,8 +686,12 @@ def build_rows(holdings, results, previous):
         # the price effect is something the ticker tape already told you.
         chg_price_pp = chg_target_pp = None
         if (change_pp is not None and y_price and cur and y_target is not None):
-            chg_price_pp = (y_target / cur - y_target / y_price) * 100.0
-            chg_target_pp = ((d["avg"] - y_target) / cur) * 100.0
+            if _is_split(y_price, cur, y_avg_pct, avg_pct):
+                # Price and target were both rebased; nothing was revised.
+                chg_price_pp = chg_target_pp = 0.0
+            else:
+                chg_price_pp = (y_target / cur - y_target / y_price) * 100.0
+                chg_target_pp = ((d["avg"] - y_target) / cur) * 100.0
         rows.append({"ticker": t, "name": name, "current": cur,
                      "pe_ttm": d.get("pe_ttm") if d else None,
                      "pe_fwd": d.get("pe_fwd") if d else None,
@@ -593,7 +701,8 @@ def build_rows(holdings, results, previous):
                      "change_pp": change_pp, "chg_price_pp": chg_price_pp,
                      "chg_target_pp": chg_target_pp, "estimated": estimated,
                      "analysts": d.get("analysts") if d else None,
-                     "rating": d.get("rating") if d else None})
+                     "rating": d.get("rating") if d else None,
+                     "rev": (revisions or {}).get(t, {})})
     rows.sort(key=lambda r: (r["avg_pct"] is None,
                              -(r["avg_pct"] if r["avg_pct"] is not None else 0)))
     return rows
@@ -601,7 +710,7 @@ def build_rows(holdings, results, previous):
 
 HEADERS = ["Ticker", "Name", "An", "Price", "Yday Price", "P/E", "Fwd P/E",
            "Avg Tgt", "Avg Tgt %", "Max Tgt %", "Min Tgt %", "Yday Avg %",
-           "Chg (pp)", "Tgt Δ"]
+           "Chg (pp)", "Tgt Δ", "Tgt Δ5d"]
 LEFT_ALIGNED = {0, 1}  # Ticker and Name columns
 
 
@@ -629,7 +738,8 @@ def print_table(rows):
               _est(fmt_pct(r["y_avg_pct"]), r["estimated"]),
               _est("%+.2f" % r["change_pp"] if r["change_pp"] is not None else "N/A",
                    r["estimated"]),
-              "%+.2f" % r["chg_target_pp"] if r["chg_target_pp"] is not None else "N/A"]
+              "%+.2f" % r["chg_target_pp"] if r["chg_target_pp"] is not None else "N/A",
+              "%+.2f" % r["rev"].get(5) if r["rev"].get(5) is not None else "N/A"]
              for r in rows]
     widths = [max(len(HEADERS[i]), max((len(row[i]) for row in table), default=0))
               for i in range(len(HEADERS))]
@@ -652,6 +762,7 @@ def write_csv(rows, universe, today):
                     "pe_ttm", "pe_forward", "avg_target", "avg_target_pct",
                     "max_target_pct", "min_target_pct", "yesterday_avg_target_pct",
                     "change_pp", "change_pp_from_price", "change_pp_from_target",
+                    "target_revision_5d_pp", "target_revision_20d_pp",
                     "prev_basis"])
         for r in rows:
             w.writerow([r["ticker"], r["name"], r["analysts"] or "",
@@ -668,6 +779,8 @@ def write_csv(rows, universe, today):
                         round(r["change_pp"], 2) if r["change_pp"] is not None else "",
                         round(r["chg_price_pp"], 2) if r["chg_price_pp"] is not None else "",
                         round(r["chg_target_pp"], 2) if r["chg_target_pp"] is not None else "",
+                        round(r["rev"][5], 2) if r["rev"].get(5) is not None else "",
+                        round(r["rev"][20], 2) if r["rev"].get(20) is not None else "",
                         ("" if r["y_price"] is None else
                          "prior-session close (target assumed unchanged)"
                          if r["estimated"] else "stored snapshot")])
@@ -697,6 +810,7 @@ def write_report(report_universes, today, history=None):
                             "chg_p": _round(r["chg_price_pp"]),
                             "chg_t": _round(r["chg_target_pp"]),
                             "an": r["analysts"], "rat": _round(r["rating"], 2),
+                            "r5": _round(r["rev"].get(5)), "r20": _round(r["rev"].get(20)),
                             "est": r["estimated"]} for r in rows]}
             for key, (label, rows) in report_universes.items()
         },
@@ -790,10 +904,11 @@ def main():
         history = load_history(conn, all_tickers)
     finally:
         conn.close()
+    revisions = revision_windows(history)
 
     report_universes = {}
     for key, (label, holdings) in universes.items():
-        rows = build_rows(holdings, results, previous)
+        rows = build_rows(holdings, results, previous, revisions)
         report_universes[key] = (label, rows)
         print()
         print("=" * 30, label, "=" * 30)
@@ -805,6 +920,17 @@ def main():
     report_path = write_report(report_universes, today, history)
     if report_path:
         log.info("HTML report written to %s", report_path)
+
+    # Everything is saved by this point, so a health failure still keeps the
+    # day's data — it just makes the run fail visibly rather than degrade in
+    # silence. The scheduled workflow surfaces the non-zero exit as a failed run.
+    problems = check_health(universes, results)
+    if problems:
+        for p in problems:
+            log.error("HEALTH: %s", p)
+        log.error("Run completed but the data looks wrong — see the %d problem(s) "
+                  "above. Data was still saved.", len(problems))
+        sys.exit(1)
 
 
 if __name__ == "__main__":
