@@ -29,26 +29,38 @@ open output/report.html
 
 Takes ~10 seconds (~520 unique tickers; overlapping tickers are fetched once).
 
-## Scheduling
+## Scheduling — runs in the cloud, nothing to leave switched on
 
-Runs automatically at 6:30pm Mon-Fri via a launchd LaunchAgent
-(`~/Library/LaunchAgents/com.user.qqq-targets.plist`), logging to
-`cron.log`. Unlike cron, launchd runs the job on wake if the Mac was asleep
-at the scheduled time.
+The daily collection runs on **GitHub Actions** (`.github/workflows/daily.yml`)
+at 23:30 UTC on weekdays — 7:30pm EDT / 6:30pm EST, after the US close. Your
+Mac can be asleep, closed, or off.
 
-Note: the project must live outside `~/Documents`/`~/Desktop`/`~/Downloads` —
-macOS blocks background jobs (launchd/cron) from reading those folders.
+**Live report:** https://xignoe.github.io/tradeAssist/ (republished every run)
+
+Each run commits that day's rows to `data/YYYY-MM-DD.csv`. Those text
+snapshots are the durable record; `qqq_targets.db` is a cache rebuilt from
+them, so a fresh clone recovers full history:
 
 ```bash
-# check it's loaded
-launchctl list | grep qqq-targets
-
-# trigger a run right now
-launchctl kickstart gui/$(id -u)/com.user.qqq-targets
-
-# uninstall
-launchctl bootout gui/$(id -u)/com.user.qqq-targets && rm ~/Library/LaunchAgents/com.user.qqq-targets.plist
+git pull        # fetch days collected in the cloud
+python qqq_targets.py   # imports any missing days, then adds today
 ```
+
+Trigger an off-schedule run without touching your machine:
+
+```bash
+gh workflow run "Daily targets"
+```
+
+Weekends and US market holidays have no rows by design — markets are closed,
+so there is no new data to record.
+
+### Old local scheduler (removed)
+
+A launchd LaunchAgent used to run this on the Mac. It was removed: it only
+fired if the machine happened to be awake at the scheduled time, and it
+silently missed 2026-08-11 when the Mac slept. Missed days are unrecoverable,
+because analyst consensus targets cannot be fetched for a past date.
 
 ## How it works
 
