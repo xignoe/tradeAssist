@@ -445,6 +445,23 @@ def save_today(conn, today, results):
     return len(rows)
 
 
+def load_history(conn, tickers, days=400):
+    """Per-ticker series for the drill-down chart:
+    {ticker: [[date, upside_pct, price, avg_target], ...]} oldest first."""
+    placeholders = ",".join("?" * len(tickers))
+    rows = conn.execute(
+        """SELECT ticker, date, current_price, avg_target FROM targets
+           WHERE ticker IN (%s) AND current_price > 0 AND avg_target IS NOT NULL
+             AND date >= date('now', ?)
+           ORDER BY ticker, date""" % placeholders,
+        list(tickers) + ["-%d days" % days]).fetchall()
+    hist = {}
+    for ticker, day, price, target in rows:
+        hist.setdefault(ticker, []).append(
+            [day, round((target / price - 1) * 100, 2), round(price, 2), round(target, 2)])
+    return hist
+
+
 def load_previous(conn, today, tickers):
     """Most recent prior-date row per ticker: {ticker: (current_price, avg_target)}."""
     placeholders = ",".join("?" * len(tickers))
@@ -579,7 +596,7 @@ def write_csv(rows, universe, today):
     return path
 
 
-def write_report(report_universes, today):
+def write_report(report_universes, today, history=None):
     """Render output/report.html from report_template.html with the day's data
     embedded — a self-contained page, refreshed on every run."""
     template_path = BASE_DIR / "report_template.html"
@@ -588,6 +605,7 @@ def write_report(report_universes, today):
         return None
     payload = {
         "date": today.isoformat(),
+        "history": history or {},
         "universes": {
             key: {"label": label,
                   "rows": [{"t": r["ticker"], "n": r["name"],
@@ -684,6 +702,7 @@ def main():
         saved = save_today(conn, today, results)
         log.info("Saved %d rows for %s (prior data for %d tickers)",
                  saved, today, len(previous))
+        history = load_history(conn, all_tickers)
     finally:
         conn.close()
 
@@ -698,7 +717,7 @@ def main():
         csv_path = write_csv(rows, key, today)
         log.info("%s CSV written to %s", label, csv_path)
 
-    report_path = write_report(report_universes, today)
+    report_path = write_report(report_universes, today, history)
     if report_path:
         log.info("HTML report written to %s", report_path)
 
