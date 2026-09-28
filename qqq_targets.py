@@ -28,8 +28,9 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import date
+from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -41,6 +42,12 @@ DB_PATH = BASE_DIR / "qqq_targets.db"
 
 SNAPSHOT_COLS = ["date", "ticker", "current_price", "avg_target", "max_target",
                  "min_target", "pe_ttm", "pe_fwd", "analysts", "rating"]
+
+# US equity sessions are defined in New York time. Anything date-like is derived
+# from this zone, never from the machine's clock: the cloud runner is on UTC and
+# fires after 00:00 UTC, so date.today() there names the *next* day.
+MARKET_TZ = ZoneInfo("America/New_York")
+MARKET_OPEN = dtime(9, 30)
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -398,12 +405,12 @@ async def fetch_targets(client, sem, ticker):
         for attempt in range(1, MAX_TRIES + 1):
             try:
                 data = None
-                for exchange in ("NASDAQ", "NYSE", "AMEX", "CBOE"):
+                for exchange in TV_EXCHANGES:
                     data = await _tv_fetch_symbol(client, exchange, tv_ticker)
                     if data is not None:
                         break
                 if data is None:
-                    log.warning("%s: not found on NASDAQ/NYSE/AMEX/CBOE", ticker)
+                    log.warning("%s: not found on %s", ticker, "/".join(TV_EXCHANGES))
                     return ticker, None
                 current = data.get("close")
                 avg = data.get("price_target_average")
@@ -422,6 +429,10 @@ async def fetch_targets(client, sem, ticker):
                                       data.get("earnings_per_share_forecast_next_fy")),
                     "prev_close": (float(current) - float(data["change_abs"])
                                    if data.get("change_abs") is not None else None),
+                    "analysts": (int(data["recommendation_total"])
+                                 if data.get("recommendation_total") else None),
+                    "rating": (float(data["recommendation_mark"])
+                               if data.get("recommendation_mark") is not None else None),
                 }
             except Exception as exc:
                 if attempt == MAX_TRIES:
@@ -829,7 +840,7 @@ def write_report(report_universes, today, history=None):
     html = (template_path.read_text()
             .replace("__DATA__", json.dumps(payload))
             .replace("__DATE__", today.isoformat())
-            .replace("__GENERATED__", time.strftime("%Y-%m-%d %H:%M")))
+            .replace("__GENERATED__", datetime.now(MARKET_TZ).strftime("%Y-%m-%d %H:%M ET")))
     OUTPUT_DIR.mkdir(exist_ok=True)
     path = OUTPUT_DIR / "report.html"
     path.write_text(html)
@@ -858,10 +869,26 @@ def print_summary(rows):
 # Main
 # ----------------------------------------------------------------------------
 
+def session_date(now=None):
+    """The trading session whose prices this run records.
+
+    Before the open, the latest prices are still the previous session's close,
+    and at the weekend they are Friday's. Market holidays aren't modelled: a run
+    on one is labelled with the holiday's date."""
+    now = (now or datetime.now(MARKET_TZ)).astimezone(MARKET_TZ)
+    d = now.date()
+    if now.time() < MARKET_OPEN:
+        d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
 def main():
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                         format="%(levelname)s %(message)s")
-    today = date.today()
+    today = session_date()
+    log.info("Recording session %s", today)
 
     universes = {}  # key -> (label, holdings)
     for key, label, fetcher in UNIVERSES:

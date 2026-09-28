@@ -8,3 +8,4 @@ run*.out
 run*.err
 .claude/
 prices.pkl
+.DS_Store

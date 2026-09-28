@@ -110,7 +110,9 @@ def signal_targets(px):
              .pivot(index="date", columns="ticker", values="avg_target"))
     tgt.index = pd.to_datetime(tgt.index)
     tgt = tgt.reindex(columns=px.columns)
-    return tgt.reindex(px.index).ffill()
+    # Forward-fill across the union so a snapshot dated on a non-trading day
+    # (weekend, holiday) carries forward instead of being dropped.
+    return tgt.reindex(tgt.index.union(px.index)).ffill().reindex(px.index)
 
 
 # ---------------------------------------------------------------------------
